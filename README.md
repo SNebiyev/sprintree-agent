@@ -1,5 +1,7 @@
 # sprintree-agent
 
+> Status: early preview. The install commands below are being verified client by client; expect changes.
+
 Teach your AI coding agent to work with [Sprintree](https://sprintree.com): after a session the board
 tells the truth. Work is recorded as epic/story/task, statuses match reality, and every deferred finding
 becomes a To do card another session can pick up.
@@ -85,4 +87,4 @@ node skills/sprintree/scripts/st.mjs call search_issues '{"project":"KEY","query
 
 ## License
 
-LICENSE: TBD (Samir decides)
+MIT - see LICENSE

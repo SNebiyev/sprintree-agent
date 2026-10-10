@@ -9,5 +9,5 @@
     "test": "node --test test/st.test.mjs",
     "lint:json": "node scripts/lint-json.mjs"
   },
-  "license": "UNLICENSED"
+  "license": "MIT"
 }
