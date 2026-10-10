@@ -1,0 +1,12 @@
+{
+  "name": "sprintree",
+  "description": "Sprintree agent skill and MCP server",
+  "owner": { "name": "Sprintree" },
+  "plugins": [
+    {
+      "name": "sprintree",
+      "source": "./",
+      "description": "Sprintree sync/task skill plus the Sprintree MCP server (OAuth)."
+    }
+  ]
+}

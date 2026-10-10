@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "sprintree": {
+      "type": "http",
+      "url": "https://sprintree.com/mcp"
+    }
+  }
+}
