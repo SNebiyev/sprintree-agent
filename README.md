@@ -23,12 +23,10 @@ Model-independent. Status: **local draft, not published.**
 
 | Client | Command |
 |---|---|
-| Claude Code | `claude plugin marketplace add OWNER/sprintree-agent && claude plugin install sprintree@sprintree` |
+| Claude Code | `claude plugin marketplace add SNebiyev/sprintree-agent && claude plugin install sprintree@sprintree` |
 | Codex CLI | `codex mcp add sprintree --url https://sprintree.com/mcp` then copy `skills/sprintree` to `~/.agents/skills/` (see below) |
-| Gemini CLI | `gemini extensions install https://github.com/OWNER/sprintree-agent` |
+| Gemini CLI | `gemini extensions install https://github.com/SNebiyev/sprintree-agent` |
 | Any other MCP agent | add `https://sprintree.com/mcp` as a Streamable HTTP server, paste `AGENTS.md` into your repo |
-
-`OWNER` is a placeholder until the repo is published.
 
 ### Claude Code
 
@@ -49,7 +47,7 @@ repo's own `AGENTS.md`. Codex plugin packaging is documented by OpenAI but not v
 ### Gemini CLI
 
 ```bash
-gemini extensions install https://github.com/OWNER/sprintree-agent
+gemini extensions install https://github.com/SNebiyev/sprintree-agent
 ```
 
 The extension registers the MCP server, loads `GEMINI.md` and exposes the skill. Then run `/mcp auth sprintree`.
