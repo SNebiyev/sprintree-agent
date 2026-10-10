@@ -12,7 +12,7 @@
  *   node st.mjs key [dir]                  # resolve the project key for a repo (default: cwd)
  *   node st.mjs config [dir]               # print the resolved project config (JSON, no secrets)
  *
- * Auth: set SPRINTREE_TOKEN to a personal access token (Settings -> Tokens in Sprintree).
+ * Auth: set SPRINTREE_TOKEN to a personal access token (itn_..., Settings -> API & MCP -> Personal access tokens).
  * "Bearer " is added when missing. The token is never printed. SPRINTREE_MCP_URL overrides
  * the endpoint (default https://sprintree.com/mcp; must be https unless the host is
  * localhost, 127.0.0.1 or ::1). SPRINTREE_TIMEOUT_MS sets the per-request timeout (default 30000).
@@ -170,7 +170,7 @@ function authHeader(env) {
   const t = (env.SPRINTREE_TOKEN || "").trim();
   if (!t) {
     throw new CliError(
-      "No token. Set SPRINTREE_TOKEN to a Sprintree personal access token (Settings -> Tokens), " +
+      "No token. Set SPRINTREE_TOKEN to a Sprintree personal access token (itn_..., Settings -> API & MCP -> Personal access tokens), " +
         "or connect the Sprintree MCP server in your agent (OAuth) and use its tools directly."
     );
   }
@@ -217,7 +217,7 @@ function makeClient({ fetchImpl, env }) {
       throw e;
     }
     if (notify) return null;
-    if (res.status === 401) throw new CliError("HTTP 401: invalid, expired or revoked token (create a new one in Settings -> Tokens)");
+    if (res.status === 401) throw new CliError("HTTP 401: invalid, expired or revoked token (create a new one in Settings -> API & MCP -> Personal access tokens)");
     if (res.status === 403) throw new CliError("HTTP 403: the token cannot do this (read-only token on a write tool?)");
     if (!res.ok) throw new CliError(`HTTP ${res.status}: ${scrub(text.slice(0, 300), env)}`);
     let msg;
