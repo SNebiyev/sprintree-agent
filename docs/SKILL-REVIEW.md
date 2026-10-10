@@ -9,16 +9,16 @@ Verdicts: **kept** (same rule), **generalised** (same rule, personal or client-s
 
 | # | Original rule | Verdict | Public form / reason |
 |---|---|---|---|
-| 1 | Two modes decided by the explicit argument only (sync default, task) | generalised | Same table. Slash-command wording and Azerbaijani aliases replaced by "task / next / take the next task". |
+| 1 | Two modes decided by the explicit argument only (sync default, task) | generalised | Same table. Slash-command wording and non-English aliases replaced by "task / next / take the next task". |
 | 2 | Sync never takes a new card, even with no work left | kept | Modes table. |
 | 3 | No task mode inferred from an idle session or tone; may LIST top 3 candidates | kept | Modes section. |
-| 4 | Sync does not stop in-flight work, continue without asking | generalised | Kept; the dated anecdote and the PCC/e2e examples removed. |
+| 4 | Sync does not stop in-flight work, continue without asking | generalised | Kept; the dated anecdote and the pipeline examples removed. |
 | 5 | Rule zero: nothing unverified on the board; lower status plus a comment | kept | Rule zero. |
 | 6 | Never create a duplicate; search before every create | kept | Rule zero. |
 | 7 | Step 0: `ToolSearch sprintree`, else the bundled client, exits 1 on refusal | generalised | Client-neutral: "the client may load MCP tools lazily, search the tool list for `sprintree` before falling back" (restored in this form). Client path is `<skill-dir>/scripts/st.mjs`. |
 | 8 | Tell the user once MCP is not connected, with the `claude mcp add` fix | generalised | Points to the README, one command per client. |
 | 9 | Project key from `CLAUDE.md`/`AGENTS.md`, else `list_projects`, then write the link | generalised | Also `GEMINI.md` and `.sprintree.json`; same fallback and write-back. |
-| 10 | Project rules: `list_statuses`, `list_labels`, topology; language and typography from the repo's CLAUDE.md | generalised | Language and typography now come from `.sprintree.json` or the repo's agent file; the hard-coded Azerbaijani, hyphen and semicolon rules are config, not skill text. |
+| 10 | Project rules: `list_statuses`, `list_labels`, topology; language and typography from the repo's CLAUDE.md | generalised | Language and typography now come from `.sprintree.json` or the repo's agent file; the hard-coded language and punctuation rules are config, not skill text. |
 | 11 | Step 1 inventory: Done / In flight / Deferred, deferred is the list sessions lose | kept | Examples made neutral; subagent-report and concern sweeps kept without tool-specific names. |
 | 12 | Skip noise, but a commit message is no reason to skip a card | kept | |
 | 13 | Step 2: search across ALL statuses, topology under the likely epic, pull in-progress | kept | In-progress pull now uses `category: "in_progress"`. |
@@ -39,7 +39,7 @@ Verdicts: **kept** (same rule), **generalised** (same rule, personal or client-s
 | 28 | Due dates for re-measurements | kept | |
 | 29 | Multilingual trigger phrases in the frontmatter description | restored | English phrases plus a note that the same requests in any language count. Original phrases in one specific language are not copied. |
 | 30 | Project-specific examples (Cloudflare, WAF, a named project's epics) | dropped | Personal context, useless to other users. |
-| 31 | Slash-command, PCC, subagent and "wave" vocabulary, dated anecdotes, 🔴 markers | dropped | Belong to one user's setup and one client; the rule behind each is kept in neutral words. |
+| 31 | Slash-command, gate, subagent and "wave" vocabulary, dated anecdotes, 🔴 markers | dropped | Belong to one user's setup and one client; the rule behind each is kept in neutral words. |
 | 32 | Hard-coded working language, typography, status wording | dropped from the skill | Moved to `.sprintree.json` (`language`, `typography`, `section_titles`). |
 
 ## New rules (not in the original)
