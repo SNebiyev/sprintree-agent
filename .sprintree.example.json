@@ -1,6 +1,5 @@
 {
   "project": "KEY",
   "language": "English",
-  "typography": "plain hyphen, no em dash",
-  "statuses": { "todo": "todo", "in_progress": "in_progress", "review": "review", "done": "done" }
+  "typography": "plain hyphen, no em dash"
 }

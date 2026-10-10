@@ -61,14 +61,14 @@ from this repo (or its contents) into your repo or custom instructions.
 ## Auth
 
 - **OAuth (recommended):** the client signs in through the browser, you choose read or read and write. No token to copy.
-- **Personal access token:** create one in Sprintree (Settings, Tokens). Pass it as `Authorization: Bearer <token>`
+- **Personal access token:** create one in Sprintree under Settings -> API & MCP -> Personal access tokens (tokens start with `itn_`). Pass it as `Authorization: Bearer <token>`
   (for example `claude mcp add --transport http sprintree https://sprintree.com/mcp --header "Authorization: Bearer $SPRINTREE_TOKEN"`),
   and export `SPRINTREE_TOKEN` for `st.mjs`. The token is never printed by the client.
 
 ## Configure (optional)
 
 Link the board in your repo's `AGENTS.md`/`CLAUDE.md`/`GEMINI.md` as `https://sprintree.com/p/<KEY>`, or add a
-`.sprintree.json` (see `.sprintree.example.json`): `project`, `language`, `typography`, `statuses`.
+`.sprintree.json` (see `.sprintree.example.json`): `project`, `language`, `typography`, and `statuses` (an optional override: the category names `todo`, `in_progress`, `review`, `done` work in every project).
 
 ## The fallback client
 
@@ -80,7 +80,7 @@ node skills/sprintree/scripts/st.mjs call search_issues '{"project":"KEY","query
 
 ## Develop
 
-`npm test` (Node >= 18, mocked fetch, no network) and `npm run lint:json`. CI draft: `.github/workflows/test.yml`
+`npm test` (Node >= 18, mocked fetch, no network, includes the tool-consistency check) and `npm run lint:json`. `npm run tools:refresh` rebuilds `test/tools.snapshot.json` from the live server (needs `SPRINTREE_TOKEN`, never runs in CI); `node scripts/check-tools.mjs` checks the docs against it offline. CI draft: `.github/workflows/test.yml`
 (ubuntu, macos, windows).
 
 ## License

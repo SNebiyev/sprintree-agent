@@ -1,0 +1,1650 @@
+{
+ "tools": {
+  "add_comment": {
+   "properties": {
+    "body": {},
+    "idempotency_key": {},
+    "key": {},
+    "page": {},
+    "project": {},
+    "quote": {},
+    "reply_to": {}
+   },
+   "required": [
+    "body"
+   ]
+  },
+  "answer_invitation": {
+   "properties": {
+    "accept": {},
+    "id": {}
+   },
+   "required": [
+    "accept",
+    "id"
+   ]
+  },
+  "archive_notifications": {
+   "properties": {
+    "ids": {}
+   },
+   "required": [
+    "ids"
+   ]
+  },
+  "archive_project": {
+   "properties": {
+    "project": {}
+   },
+   "required": [
+    "project"
+   ]
+  },
+  "attach_file": {
+   "properties": {
+    "content_base64": {},
+    "content_type": {},
+    "filename": {},
+    "key": {}
+   },
+   "required": [
+    "content_base64",
+    "filename",
+    "key"
+   ]
+  },
+  "bulk_update_issues": {
+   "properties": {
+    "add_labels": {},
+    "assignee": {},
+    "confirm_open_criteria": {},
+    "cycle": {},
+    "delete": {},
+    "due_date": {},
+    "expect": {},
+    "format": {
+     "enum": [
+      "json",
+      "text"
+     ]
+    },
+    "keys": {},
+    "parent": {},
+    "plan": {},
+    "preview": {},
+    "priority": {
+     "enum": [
+      "none",
+      "low",
+      "medium",
+      "high",
+      "urgent"
+     ]
+    },
+    "project": {},
+    "remove_labels": {},
+    "restore": {},
+    "status": {},
+    "status_category": {
+     "enum": [
+      "todo",
+      "in_progress",
+      "review",
+      "done"
+     ]
+    },
+    "type": {
+     "enum": [
+      "epic",
+      "story",
+      "task"
+     ]
+    }
+   },
+   "required": [
+    "keys"
+   ]
+  },
+  "cancel_invitation": {
+   "properties": {
+    "invitation": {},
+    "project": {}
+   },
+   "required": [
+    "invitation",
+    "project"
+   ]
+  },
+  "change_member_role": {
+   "properties": {
+    "project": {},
+    "role": {
+     "enum": [
+      "editor",
+      "viewer"
+     ]
+    },
+    "username": {}
+   },
+   "required": [
+    "project",
+    "role",
+    "username"
+   ]
+  },
+  "check_criteria": {
+   "properties": {
+    "check": {},
+    "key": {},
+    "uncheck": {}
+   },
+   "required": [
+    "key"
+   ]
+  },
+  "create_issue": {
+   "properties": {
+    "assignee": {},
+    "confirm_open_criteria": {},
+    "criteria": {},
+    "cycle": {},
+    "description": {},
+    "description_template": {
+     "enum": [
+      "bug",
+      "feature",
+      "research"
+     ]
+    },
+    "due_date": {},
+    "idempotency_key": {},
+    "labels": {},
+    "parent": {},
+    "priority": {
+     "enum": [
+      "none",
+      "low",
+      "medium",
+      "high",
+      "urgent"
+     ]
+    },
+    "project": {},
+    "skip_criteria": {
+     "enum": [
+      "none"
+     ]
+    },
+    "status": {},
+    "title": {},
+    "type": {
+     "enum": [
+      "epic",
+      "story",
+      "task"
+     ]
+    }
+   },
+   "required": [
+    "project",
+    "title"
+   ]
+  },
+  "create_label": {
+   "properties": {
+    "color": {},
+    "name": {},
+    "project": {}
+   },
+   "required": [
+    "name",
+    "project"
+   ]
+  },
+  "create_page": {
+   "properties": {
+    "after": {},
+    "idempotency_key": {},
+    "markdown": {},
+    "parent": {},
+    "project": {},
+    "title": {}
+   },
+   "required": [
+    "project",
+    "title"
+   ]
+  },
+  "create_project": {
+   "properties": {
+    "acceptance_criteria": {},
+    "definition_of_done": {},
+    "description": {},
+    "key": {},
+    "name": {},
+    "visibility": {
+     "enum": [
+      "private",
+      "shared",
+      "public"
+     ]
+    }
+   },
+   "required": [
+    "name"
+   ]
+  },
+  "create_status": {
+   "properties": {
+    "category": {
+     "enum": [
+      "todo",
+      "in_progress",
+      "review",
+      "done"
+     ]
+    },
+    "color": {},
+    "name": {},
+    "project": {}
+   },
+   "required": [
+    "category",
+    "name",
+    "project"
+   ]
+  },
+  "delete_archived_project": {
+   "properties": {
+    "cancel": {},
+    "confirm_code": {},
+    "cursor": {},
+    "limit": {},
+    "project": {},
+    "what": {
+     "enum": [
+      "project",
+      "files"
+     ]
+    }
+   },
+   "required": []
+  },
+  "delete_comment": {
+   "properties": {
+    "comment_id": {}
+   },
+   "required": [
+    "comment_id"
+   ]
+  },
+  "delete_file": {
+   "properties": {
+    "id": {}
+   },
+   "required": [
+    "id"
+   ]
+  },
+  "delete_issue": {
+   "properties": {
+    "key": {}
+   },
+   "required": [
+    "key"
+   ]
+  },
+  "delete_label": {
+   "properties": {
+    "name": {},
+    "project": {}
+   },
+   "required": [
+    "name",
+    "project"
+   ]
+  },
+  "delete_page": {
+   "properties": {
+    "page": {},
+    "project": {},
+    "restore": {}
+   },
+   "required": [
+    "project"
+   ]
+  },
+  "delete_status": {
+   "properties": {
+    "move_to": {},
+    "project": {},
+    "status": {}
+   },
+   "required": [
+    "move_to",
+    "project",
+    "status"
+   ]
+  },
+  "delete_view": {
+   "properties": {
+    "view": {}
+   },
+   "required": [
+    "view"
+   ]
+  },
+  "disconnect_repository": {
+   "properties": {
+    "project": {},
+    "repository": {}
+   },
+   "required": [
+    "project",
+    "repository"
+   ]
+  },
+  "edit_comment": {
+   "properties": {
+    "body": {},
+    "comment_id": {}
+   },
+   "required": [
+    "body",
+    "comment_id"
+   ]
+  },
+  "get_comment_versions": {
+   "properties": {
+    "comment_id": {},
+    "cursor": {},
+    "format": {
+     "enum": [
+      "json",
+      "text"
+     ]
+    },
+    "limit": {}
+   },
+   "required": [
+    "comment_id"
+   ]
+  },
+  "get_description_version": {
+   "properties": {
+    "key": {},
+    "version": {}
+   },
+   "required": [
+    "key",
+    "version"
+   ]
+  },
+  "get_event": {
+   "properties": {
+    "id": {}
+   },
+   "required": [
+    "id"
+   ]
+  },
+  "get_issue_details": {
+   "properties": {
+    "children_cursor": {},
+    "children_limit": {},
+    "comments_cursor": {},
+    "comments_limit": {},
+    "format": {
+     "enum": [
+      "json",
+      "text"
+     ]
+    },
+    "include": {
+     "enum": [
+      "description",
+      "comments",
+      "children",
+      "links",
+      "code",
+      "criteria",
+      "pages"
+     ]
+    },
+    "key": {},
+    "pages_cursor": {}
+   },
+   "required": [
+    "key"
+   ]
+  },
+  "get_issue_history": {
+   "properties": {
+    "cursor": {},
+    "format": {
+     "enum": [
+      "json",
+      "text"
+     ]
+    },
+    "key": {},
+    "limit": {}
+   },
+   "required": [
+    "key"
+   ]
+  },
+  "get_issue_stats": {
+   "properties": {
+    "assignee": {},
+    "due": {
+     "enum": [
+      "overdue",
+      "week",
+      "none",
+      "any"
+     ]
+    },
+    "format": {
+     "enum": [
+      "json",
+      "text"
+     ]
+    },
+    "group_by": {
+     "enum": [
+      "status",
+      "assignee",
+      "priority",
+      "type",
+      "parent"
+     ]
+    },
+    "project": {},
+    "query": {},
+    "reporter": {},
+    "scope": {
+     "enum": [
+      "assigned",
+      "created",
+      "subscribed",
+      "review"
+     ]
+    },
+    "status": {},
+    "subscribed": {},
+    "type": {
+     "enum": [
+      "epic",
+      "story",
+      "task"
+     ]
+    },
+    "tz": {}
+   },
+   "required": []
+  },
+  "get_page": {
+   "properties": {
+    "comments_cursor": {},
+    "comments_limit": {},
+    "cursor": {},
+    "format": {
+     "enum": [
+      "json",
+      "text"
+     ]
+    },
+    "include": {},
+    "limit": {},
+    "page": {},
+    "project": {},
+    "version": {}
+   },
+   "required": [
+    "page",
+    "project"
+   ]
+  },
+  "get_preferences": {
+   "properties": {
+    "format": {
+     "enum": [
+      "json",
+      "text"
+     ]
+    },
+    "project": {}
+   },
+   "required": []
+  },
+  "get_project_topology": {
+   "properties": {
+    "ac_incomplete": {},
+    "assignee": {},
+    "blocked": {},
+    "category": {
+     "enum": [
+      "todo",
+      "in_progress",
+      "review",
+      "done"
+     ]
+    },
+    "committer": {},
+    "cursor": {},
+    "cycle": {},
+    "depth": {
+     "enum": [
+      "1",
+      "all"
+     ]
+    },
+    "dod_incomplete": {},
+    "due": {
+     "enum": [
+      "overdue",
+      "week",
+      "none",
+      "any"
+     ]
+    },
+    "epic": {},
+    "format": {
+     "enum": [
+      "json",
+      "text"
+     ]
+    },
+    "label": {},
+    "limit": {},
+    "open": {},
+    "parent": {},
+    "priority": {
+     "enum": [
+      "none",
+      "low",
+      "medium",
+      "high",
+      "urgent"
+     ]
+    },
+    "project": {},
+    "query": {},
+    "reporter": {},
+    "review_state": {
+     "enum": [
+      "requested",
+      "approved",
+      "changes_requested"
+     ]
+    },
+    "reviewer": {},
+    "status": {},
+    "story": {},
+    "subscribed": {},
+    "subtasks": {},
+    "subtree": {},
+    "type": {
+     "enum": [
+      "epic",
+      "story",
+      "task"
+     ]
+    },
+    "week": {}
+   },
+   "required": [
+    "project"
+   ]
+  },
+  "get_slack_notifications": {
+   "properties": {
+    "project": {}
+   },
+   "required": [
+    "project"
+   ]
+  },
+  "get_work_context": {
+   "properties": {
+    "children_cursor": {},
+    "children_limit": {},
+    "comments_cursor": {},
+    "comments_limit": {},
+    "format": {
+     "enum": [
+      "json",
+      "text"
+     ]
+    },
+    "include_comments": {},
+    "key": {}
+   },
+   "required": [
+    "key"
+   ]
+  },
+  "invite_member": {
+   "properties": {
+    "email": {},
+    "project": {},
+    "role": {
+     "enum": [
+      "editor",
+      "viewer"
+     ]
+    }
+   },
+   "required": [
+    "email",
+    "project",
+    "role"
+   ]
+  },
+  "join_project": {
+   "properties": {
+    "project": {}
+   },
+   "required": [
+    "project"
+   ]
+  },
+  "link_issues": {
+   "properties": {
+    "from": {},
+    "kind": {
+     "enum": [
+      "blocks",
+      "blocked_by",
+      "relates"
+     ]
+    },
+    "to": {}
+   },
+   "required": [
+    "from",
+    "kind",
+    "to"
+   ]
+  },
+  "list_connected_accounts": {
+   "properties": {
+    "cursor": {},
+    "format": {
+     "enum": [
+      "json",
+      "text"
+     ]
+    },
+    "limit": {}
+   },
+   "required": []
+  },
+  "list_criteria_templates": {
+   "properties": {
+    "cursor": {},
+    "epic": {},
+    "format": {
+     "enum": [
+      "json",
+      "text"
+     ]
+    },
+    "limit": {},
+    "project": {}
+   },
+   "required": [
+    "project"
+   ]
+  },
+  "list_cycles": {
+   "properties": {
+    "cursor": {},
+    "cycle": {},
+    "format": {
+     "enum": [
+      "json",
+      "text"
+     ]
+    },
+    "limit": {},
+    "project": {},
+    "state": {
+     "enum": [
+      "planned",
+      "active",
+      "completed",
+      "open"
+     ]
+    }
+   },
+   "required": [
+    "project"
+   ]
+  },
+  "list_events": {
+   "properties": {
+    "cursor": {},
+    "format": {
+     "enum": [
+      "json",
+      "text"
+     ]
+    },
+    "issue": {},
+    "limit": {},
+    "project": {},
+    "since_cursor": {},
+    "types": {
+     "enum": [
+      "issue.created",
+      "issue.updated",
+      "issue.status_changed",
+      "issue.moved",
+      "issue.deleted",
+      "issue.description_saved",
+      "comment.created",
+      "comment.edited",
+      "comment.deleted",
+      "comment.resolved",
+      "comment.reopened",
+      "label.created",
+      "label.updated",
+      "label.deleted",
+      "status.created",
+      "status.updated",
+      "status.reordered",
+      "status.deleted",
+      "member.added",
+      "member.role_changed",
+      "member.removed",
+      "project.created",
+      "project.updated",
+      "project.archived",
+      "project.restored",
+      "file.attached",
+      "file.deleted",
+      "link.added",
+      "link.removed",
+      "review.requested",
+      "review.submitted",
+      "review.removed",
+      "code_ref.linked",
+      "code_ref.updated",
+      "code_ref.unlinked",
+      "project.repository_connected",
+      "project.repository_disconnected",
+      "issue.criteria_changed",
+      "project.criteria_templates_changed",
+      "view.created",
+      "view.updated",
+      "view.deleted",
+      "cycle.created",
+      "cycle.updated",
+      "cycle.started",
+      "cycle.completed",
+      "cycle.deleted",
+      "commitment.updated",
+      "page.created",
+      "page.updated",
+      "page.moved",
+      "page.deleted",
+      "page.restored",
+      "page.commented"
+     ]
+    }
+   },
+   "required": []
+  },
+  "list_invitations": {
+   "properties": {
+    "cursor": {},
+    "format": {
+     "enum": [
+      "json",
+      "text"
+     ]
+    },
+    "limit": {},
+    "project": {}
+   },
+   "required": []
+  },
+  "list_issue_commits": {
+   "properties": {
+    "cursor": {},
+    "format": {
+     "enum": [
+      "json",
+      "text"
+     ]
+    },
+    "key": {},
+    "limit": {}
+   },
+   "required": [
+    "key"
+   ]
+  },
+  "list_issue_files": {
+   "properties": {
+    "cursor": {},
+    "format": {
+     "enum": [
+      "json",
+      "text"
+     ]
+    },
+    "key": {},
+    "limit": {}
+   },
+   "required": [
+    "key"
+   ]
+  },
+  "list_labels": {
+   "properties": {
+    "cursor": {},
+    "format": {
+     "enum": [
+      "json",
+      "text"
+     ]
+    },
+    "limit": {},
+    "project": {}
+   },
+   "required": [
+    "project"
+   ]
+  },
+  "list_mcp_changes": {
+   "properties": {
+    "cursor": {},
+    "format": {
+     "enum": [
+      "json",
+      "text"
+     ]
+    },
+    "full": {},
+    "limit": {},
+    "since": {}
+   },
+   "required": []
+  },
+  "list_members": {
+   "properties": {
+    "cursor": {},
+    "format": {
+     "enum": [
+      "json",
+      "text"
+     ]
+    },
+    "limit": {},
+    "project": {},
+    "q": {}
+   },
+   "required": [
+    "project"
+   ]
+  },
+  "list_notifications": {
+   "properties": {
+    "before": {},
+    "cursor": {},
+    "format": {
+     "enum": [
+      "json",
+      "text"
+     ]
+    },
+    "include_done": {},
+    "include_snoozed": {},
+    "limit": {},
+    "unread_only": {},
+    "view": {
+     "enum": [
+      "inbox",
+      "snoozed",
+      "done"
+     ]
+    }
+   },
+   "required": []
+  },
+  "list_pages": {
+   "properties": {
+    "cursor": {},
+    "depth": {
+     "enum": [
+      "1",
+      "all"
+     ]
+    },
+    "format": {
+     "enum": [
+      "json",
+      "text"
+     ]
+    },
+    "limit": {},
+    "parent": {},
+    "project": {},
+    "query": {}
+   },
+   "required": [
+    "project"
+   ]
+  },
+  "list_project_activity": {
+   "properties": {
+    "cursor": {},
+    "exclude_mine": {},
+    "format": {
+     "enum": [
+      "json",
+      "text"
+     ]
+    },
+    "limit": {},
+    "project": {},
+    "since": {}
+   },
+   "required": []
+  },
+  "list_project_repositories": {
+   "properties": {
+    "cursor": {},
+    "format": {
+     "enum": [
+      "json",
+      "text"
+     ]
+    },
+    "limit": {},
+    "project": {}
+   },
+   "required": [
+    "project"
+   ]
+  },
+  "list_projects": {
+   "properties": {
+    "cursor": {},
+    "format": {
+     "enum": [
+      "json",
+      "text"
+     ]
+    },
+    "group": {},
+    "limit": {}
+   },
+   "required": []
+  },
+  "list_statuses": {
+   "properties": {
+    "cursor": {},
+    "format": {
+     "enum": [
+      "json",
+      "text"
+     ]
+    },
+    "limit": {},
+    "project": {}
+   },
+   "required": [
+    "project"
+   ]
+  },
+  "list_views": {
+   "properties": {
+    "cursor": {},
+    "format": {
+     "enum": [
+      "json",
+      "text"
+     ]
+    },
+    "limit": {},
+    "project": {},
+    "scope": {
+     "enum": [
+      "all",
+      "personal",
+      "project"
+     ]
+    }
+   },
+   "required": [
+    "project"
+   ]
+  },
+  "mark_notifications_read": {
+   "properties": {
+    "all": {},
+    "ids": {}
+   },
+   "required": []
+  },
+  "mark_notifications_unread": {
+   "properties": {
+    "ids": {}
+   },
+   "required": [
+    "ids"
+   ]
+  },
+  "move_issue": {
+   "properties": {
+    "after": {},
+    "before": {},
+    "confirm_open_criteria": {},
+    "expect": {},
+    "key": {},
+    "status": {}
+   },
+   "required": [
+    "key"
+   ]
+  },
+  "move_page": {
+   "properties": {
+    "after": {},
+    "before": {},
+    "page": {},
+    "parent": {},
+    "project": {}
+   },
+   "required": [
+    "page",
+    "project"
+   ]
+  },
+  "move_project": {
+   "properties": {
+    "after": {},
+    "before": {},
+    "group": {},
+    "in": {
+     "enum": [
+      "group"
+     ]
+    },
+    "project": {},
+    "to": {
+     "enum": [
+      "top",
+      "bottom"
+     ]
+    }
+   },
+   "required": [
+    "project"
+   ]
+  },
+  "pin_project": {
+   "properties": {
+    "badge": {
+     "enum": [
+      "counts",
+      "dot",
+      "off"
+     ]
+    },
+    "pinned": {},
+    "project": {}
+   },
+   "required": [
+    "project"
+   ]
+  },
+  "remove_member": {
+   "properties": {
+    "project": {},
+    "username": {}
+   },
+   "required": [
+    "project",
+    "username"
+   ]
+  },
+  "reopen_thread": {
+   "properties": {
+    "comment_id": {}
+   },
+   "required": [
+    "comment_id"
+   ]
+  },
+  "reorder_statuses": {
+   "properties": {
+    "order": {},
+    "project": {}
+   },
+   "required": [
+    "order",
+    "project"
+   ]
+  },
+  "resolve_thread": {
+   "properties": {
+    "comment_id": {}
+   },
+   "required": [
+    "comment_id"
+   ]
+  },
+  "restore_notifications": {
+   "properties": {
+    "ids": {},
+    "snoozed_until": {},
+    "unread": {}
+   },
+   "required": [
+    "ids"
+   ]
+  },
+  "save_cycle": {
+   "properties": {
+    "action": {
+     "enum": [
+      "start",
+      "complete"
+     ]
+    },
+    "cycle": {},
+    "delete": {},
+    "ends_on": {},
+    "goal": {},
+    "move_open_to": {},
+    "name": {},
+    "project": {},
+    "rev": {},
+    "start_next": {},
+    "starts_on": {}
+   },
+   "required": [
+    "project"
+   ]
+  },
+  "save_project_group": {
+   "properties": {
+    "collapsed": {},
+    "delete": {},
+    "id": {},
+    "name": {},
+    "position": {}
+   },
+   "required": []
+  },
+  "save_view": {
+   "properties": {
+    "from": {},
+    "mode": {
+     "enum": [
+      "board",
+      "list",
+      "tree",
+      "map"
+     ]
+    },
+    "name": {},
+    "project": {},
+    "query": {},
+    "rev": {},
+    "scope": {
+     "enum": [
+      "personal",
+      "project"
+     ]
+    },
+    "view": {}
+   },
+   "required": []
+  },
+  "search_issues": {
+   "properties": {
+    "ac_incomplete": {},
+    "assignee": {},
+    "blocked": {},
+    "category": {
+     "enum": [
+      "todo",
+      "in_progress",
+      "review",
+      "done"
+     ]
+    },
+    "committer": {},
+    "cursor": {},
+    "cycle": {},
+    "dir": {
+     "enum": [
+      "asc",
+      "desc"
+     ]
+    },
+    "dod_incomplete": {},
+    "due": {
+     "enum": [
+      "overdue",
+      "week",
+      "none",
+      "any"
+     ]
+    },
+    "epic": {},
+    "fields": {
+     "enum": [
+      "updated",
+      "created",
+      "reporter",
+      "due",
+      "labels",
+      "status_name",
+      "cycle",
+      "committers"
+     ]
+    },
+    "format": {
+     "enum": [
+      "json",
+      "text"
+     ]
+    },
+    "in_comments": {},
+    "label": {},
+    "limit": {},
+    "open": {},
+    "order": {
+     "enum": [
+      "asc",
+      "desc"
+     ]
+    },
+    "orphans": {},
+    "page": {},
+    "parent": {},
+    "priority": {
+     "enum": [
+      "none",
+      "low",
+      "medium",
+      "high",
+      "urgent"
+     ]
+    },
+    "project": {},
+    "query": {},
+    "reporter": {},
+    "review_state": {
+     "enum": [
+      "requested",
+      "approved",
+      "changes_requested"
+     ]
+    },
+    "reviewer": {},
+    "sort": {
+     "enum": [
+      "updated",
+      "created",
+      "priority",
+      "number",
+      "title",
+      "due",
+      "status",
+      "assignee"
+     ]
+    },
+    "status": {},
+    "story": {},
+    "subscribed": {},
+    "subtasks": {},
+    "type": {
+     "enum": [
+      "epic",
+      "story",
+      "task"
+     ]
+    },
+    "view": {},
+    "week": {}
+   },
+   "required": []
+  },
+  "set_commitments": {
+   "properties": {
+    "keys": {},
+    "remove": {},
+    "user": {},
+    "week": {}
+   },
+   "required": [
+    "keys"
+   ]
+  },
+  "set_criteria": {
+   "properties": {
+    "add": {},
+    "apply_templates": {
+     "enum": [
+      "all",
+      "epic"
+     ]
+    },
+    "edit": {},
+    "include_removed": {},
+    "key": {},
+    "order": {},
+    "remove": {}
+   },
+   "required": [
+    "key"
+   ]
+  },
+  "set_criteria_templates": {
+   "properties": {
+    "epic": {},
+    "items": {},
+    "kind": {
+     "enum": [
+      "ac",
+      "dod"
+     ]
+    },
+    "project": {}
+   },
+   "required": [
+    "items",
+    "kind",
+    "project"
+   ]
+  },
+  "set_preferences": {
+   "properties": {
+    "date_format": {
+     "enum": [
+      "DD.MM.YYYY",
+      "YYYY-MM-DD",
+      "MMM D, YYYY",
+      "default"
+     ]
+    },
+    "default_project_view": {
+     "enum": [
+      "board",
+      "list",
+      "tree",
+      "map",
+      "default"
+     ]
+    },
+    "display": {},
+    "email_mode": {
+     "enum": [
+      "off",
+      "instant",
+      "daily"
+     ]
+    },
+    "project": {},
+    "theme": {
+     "enum": [
+      "light",
+      "dark",
+      "system",
+      "default"
+     ]
+    },
+    "time_format": {
+     "enum": [
+      "24h",
+      "12h",
+      "default"
+     ]
+    },
+    "time_zone": {},
+    "week_start": {
+     "enum": [
+      "monday",
+      "sunday",
+      "default"
+     ]
+    }
+   },
+   "required": []
+  },
+  "set_reviewers": {
+   "properties": {
+    "add": {},
+    "key": {},
+    "remove": {}
+   },
+   "required": [
+    "key"
+   ]
+  },
+  "set_slack_notifications": {
+   "properties": {
+    "channel": {},
+    "events": {
+     "enum": [
+      "issue_created",
+      "issue_done",
+      "issue_blocked",
+      "comment_mention"
+     ]
+    },
+    "include_titles": {},
+    "project": {}
+   },
+   "required": [
+    "project"
+   ]
+  },
+  "set_subscription": {
+   "properties": {
+    "key": {},
+    "page": {},
+    "project": {},
+    "subscribed": {}
+   },
+   "required": [
+    "subscribed"
+   ]
+  },
+  "set_watch": {
+   "properties": {
+    "level": {
+     "enum": [
+      "all",
+      "new_issues",
+      "none"
+     ]
+    },
+    "project": {}
+   },
+   "required": [
+    "level",
+    "project"
+   ]
+  },
+  "snooze_notifications": {
+   "properties": {
+    "ids": {},
+    "until": {}
+   },
+   "required": [
+    "ids",
+    "until"
+   ]
+  },
+  "submit_review": {
+   "properties": {
+    "key": {},
+    "verdict": {
+     "enum": [
+      "approved",
+      "changes_requested"
+     ]
+    }
+   },
+   "required": [
+    "key",
+    "verdict"
+   ]
+  },
+  "unlink_issues": {
+   "properties": {
+    "from": {},
+    "kind": {
+     "enum": [
+      "blocks",
+      "blocked_by",
+      "relates"
+     ]
+    },
+    "link_id": {},
+    "to": {}
+   },
+   "required": []
+  },
+  "update_description": {
+   "properties": {
+    "base_rev": {},
+    "key": {},
+    "markdown": {}
+   },
+   "required": [
+    "base_rev",
+    "key",
+    "markdown"
+   ]
+  },
+  "update_issue": {
+   "properties": {
+    "add_labels": {},
+    "assignee": {},
+    "cycle": {},
+    "due_date": {},
+    "expect": {},
+    "key": {},
+    "labels": {},
+    "parent": {},
+    "priority": {
+     "enum": [
+      "none",
+      "low",
+      "medium",
+      "high",
+      "urgent"
+     ]
+    },
+    "remove_labels": {},
+    "title": {},
+    "type": {
+     "enum": [
+      "epic",
+      "story",
+      "task"
+     ]
+    }
+   },
+   "required": [
+    "key"
+   ]
+  },
+  "update_issue_status": {
+   "properties": {
+    "confirm_open_criteria": {},
+    "expect": {},
+    "key": {},
+    "status": {}
+   },
+   "required": [
+    "key",
+    "status"
+   ]
+  },
+  "update_label": {
+   "properties": {
+    "color": {},
+    "name": {},
+    "new_name": {},
+    "project": {}
+   },
+   "required": [
+    "name",
+    "project"
+   ]
+  },
+  "update_page": {
+   "properties": {
+    "base_rev": {},
+    "markdown": {},
+    "page": {},
+    "project": {},
+    "title": {}
+   },
+   "required": [
+    "page",
+    "project"
+   ]
+  },
+  "update_project": {
+   "properties": {
+    "acceptance_criteria": {},
+    "color": {},
+    "definition_of_done": {},
+    "description": {},
+    "done_gate": {
+     "enum": [
+      "off",
+      "warn",
+      "block",
+      "default"
+     ]
+    },
+    "key": {},
+    "name": {},
+    "project": {},
+    "visibility": {
+     "enum": [
+      "private",
+      "shared",
+      "public"
+     ]
+    }
+   },
+   "required": [
+    "project"
+   ]
+  },
+  "update_status": {
+   "properties": {
+    "category": {
+     "enum": [
+      "todo",
+      "in_progress",
+      "review",
+      "done"
+     ]
+    },
+    "color": {},
+    "name": {},
+    "project": {},
+    "status": {}
+   },
+   "required": [
+    "project",
+    "status"
+   ]
+  }
+ }
+}

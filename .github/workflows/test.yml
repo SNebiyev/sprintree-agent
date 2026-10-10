@@ -15,5 +15,5 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-      - run: node --test test/st.test.mjs
+      - run: node --test test/st.test.mjs test/tools.test.mjs
       - run: node scripts/lint-json.mjs
