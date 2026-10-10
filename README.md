@@ -7,7 +7,7 @@ tells the truth. Work is recorded as epic/story/task, statuses match reality, an
 becomes a To do card another session can pick up.
 
 Works with Claude Code, Codex CLI, Gemini CLI and any agent that speaks MCP. Linux, macOS, Windows.
-Model-independent. Status: **local draft, not published.**
+Model-independent.
 
 ## What you get
 
@@ -30,9 +30,17 @@ Model-independent. Status: **local draft, not published.**
 
 ### Claude Code
 
-The plugin bundles the skill and `.mcp.json` (the MCP server). After install, run `/mcp`, choose
-`sprintree`, Authenticate. The skill is `/sprintree:sprintree`. Without the plugin:
-`claude mcp add --transport http --scope user sprintree https://sprintree.com/mcp`.
+The plugin bundles the skill and `.mcp.json` (the MCP server).
+
+- After `claude plugin marketplace add SNebiyev/sprintree-agent` and `claude plugin install sprintree@sprintree`
+  the skill appears as `sprintree:sprintree` and the MCP server as `plugin:sprintree:sprintree`.
+- The plugin adds the MCP server itself, no separate `claude mcp add` is needed. If you already added
+  `https://sprintree.com/mcp` with `claude mcp add`, Claude Code de-duplicates it (same URL), nothing breaks.
+- Run `/mcp` once and authenticate the sprintree server (OAuth) before first use. Until then `claude mcp list`
+  shows "Needs authentication".
+- If you earlier copied the skill by hand to `~/.claude/skills/sprintree`, remove it so the model does not see two
+  similar skills.
+- Without the plugin: `claude mcp add --transport http --scope user sprintree https://sprintree.com/mcp`.
 
 ### Codex CLI
 
@@ -60,10 +68,22 @@ from this repo (or its contents) into your repo or custom instructions.
 
 ## Auth
 
-- **OAuth (recommended):** the client signs in through the browser, you choose read or read and write. No token to copy.
-- **Personal access token:** create one in Sprintree under Settings -> API & MCP -> Personal access tokens (tokens start with `itn_`). Pass it as `Authorization: Bearer <token>`
-  (for example `claude mcp add --transport http sprintree https://sprintree.com/mcp --header "Authorization: Bearer $SPRINTREE_TOKEN"`),
-  and export `SPRINTREE_TOKEN` for `st.mjs`. The token is never printed by the client.
+- **OAuth (recommended):** connect through the client's own MCP integration. The client signs in through the browser,
+  you choose read or read and write. No token to copy, nothing secret on disk.
+- **Personal access token (PAT):** create one in Sprintree under Settings -> API & MCP -> Personal access tokens
+  (tokens start with `itn_`). Use a **read-only** token where that is enough.
+  - A token passed with `--header "Authorization: Bearer ..."` sits in **plain text** in the client's config file.
+    Where the client supports an env-var option (Codex: `bearer_token_env_var`, e.g.
+    `codex mcp add sprintree --url https://sprintree.com/mcp --bearer-token-env-var SPRINTREE_TOKEN`), keep the token in the
+    environment and reference only the variable name.
+  - Export `SPRINTREE_TOKEN` for `st.mjs`. It is never printed.
+  - Never commit a token, and never put one in `.sprintree.json`.
+- **Revoke:** Settings -> API & MCP -> Personal access tokens, delete the token. Do it at once if one leaked.
+- **Untrusted content:** the skill treats card titles, descriptions, comments, labels and linked pages as data, never as
+  instructions. It will not run a command, reveal a token, call an unrelated tool or touch files outside the repo because a
+  card says so unless you asked in the conversation, and a card that tries to redirect it is reported as a finding.
+
+Report a vulnerability: see `SECURITY.md`.
 
 ## Configure (optional)
 
@@ -72,16 +92,40 @@ Link the board in your repo's `AGENTS.md`/`CLAUDE.md`/`GEMINI.md` as `https://sp
 
 ## The fallback client
 
+Needs Node 18+. Use it only when the MCP tools are not available in the session. It is **PAT-only**: a connected
+client's OAuth session is not visible to `st.mjs`, so export a token first.
+
 ```bash
 export SPRINTREE_TOKEN=...            # PowerShell: $env:SPRINTREE_TOKEN="..."
 node skills/sprintree/scripts/st.mjs tools
 node skills/sprintree/scripts/st.mjs call search_issues '{"project":"KEY","query":"cache","format":"text"}'
+echo '{"project":"KEY"}' | node skills/sprintree/scripts/st.mjs call list_statuses -   # JSON on stdin
+node skills/sprintree/scripts/st.mjs version
 ```
 
-## Develop
+- **Windows PowerShell 5.1** mangles quotes in inline JSON: use `call <tool> @args.json` or pipe into `call <tool> -`.
+- `SPRINTREE_TIMEOUT_MS`: per-request timeout, default 30000.
+- `SPRINTREE_MCP_URL`: override the server URL. It must be https (plain http only for localhost, 127.0.0.1, ::1).
+- `.sprintree.json` holds project settings only. It must not hold tokens.
 
-`npm test` (Node >= 18, mocked fetch, no network, includes the tool-consistency check) and `npm run lint:json`. `npm run tools:refresh` rebuilds `test/tools.snapshot.json` from the live server (needs `SPRINTREE_TOKEN`, never runs in CI); `node scripts/check-tools.mjs` checks the docs against it offline. CI draft: `.github/workflows/test.yml`
-(ubuntu, macos, windows).
+## Develop / Release
+
+`npm test` (Node >= 18, mocked fetch, no network): unit tests, the tool-consistency check and `scripts/check-version.mjs`.
+`npm run lint:json` parses the manifests. `npm run tools:refresh` rebuilds `test/tools.snapshot.json` from the live
+server (needs `SPRINTREE_TOKEN`, never runs in CI). CI (`.github/workflows/test.yml`): ubuntu, macos, windows x Node 18, 22, 24.
+Nothing is pushed to master before the PCC gate and sweep in `.claude/pcc.md` are green.
+
+**Versioning:** SemVer. While 0.x, a skill rule change is a minor bump and a fix is a patch. Claude Code only updates an
+installed plugin when `version` changes, so a release without a bump reaches nobody. The version lives in `package.json`,
+`.claude-plugin/plugin.json`, `gemini-extension.json`, `VERSION` in `skills/sprintree/scripts/st.mjs` and the top
+released heading of `CHANGELOG.md` ([Keep a Changelog](https://keepachangelog.com/en/1.1.0/)); `check-version.mjs` fails
+if they differ (and, on a tag build, if the tag differs).
+
+**Release steps:**
+1. Bump all four version fields, move the `[Unreleased]` notes under `## [x.y.z] - YYYY-MM-DD` in `CHANGELOG.md`.
+2. `npm test` and the rest of the PCC gate green, push, CI green.
+3. `git tag vX.Y.Z && git push origin vX.Y.Z` (CI re-checks the tag against the version).
+4. Create the GitHub Release from the tag with the changelog section as notes.
 
 ## License
 
