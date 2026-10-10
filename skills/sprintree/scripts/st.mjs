@@ -10,12 +10,19 @@
  *   node st.mjs call <tool> -              # same, arguments read as JSON from stdin
  *   node st.mjs version                    # print the version of this script
  *   node st.mjs key [dir]                  # resolve the project key for a repo (default: cwd)
- *   node st.mjs config [dir]               # print the resolved project config (JSON, no secrets)
+ *   node st.mjs config [dir]               # print the resolved project config (only the known keys)
  *
  * Auth: set SPRINTREE_TOKEN to a personal access token (itn_..., Settings -> API & MCP -> Personal access tokens).
  * "Bearer " is added when missing. The token is never printed. SPRINTREE_MCP_URL overrides
  * the endpoint (default https://sprintree.com/mcp; must be https unless the host is
- * localhost, 127.0.0.1 or ::1). SPRINTREE_TIMEOUT_MS sets the per-request timeout (default 30000).
+ * localhost, 127.0.0.1 or ::1; redirects are refused). SPRINTREE_TIMEOUT_MS sets the per-request
+ * timeout (a whole number of ms from 1 to 600000, default 30000).
+ *
+ * `.sprintree.json` (enforced by resolveConfig): never a symlink and never resolved outside the
+ * directory it was found in; `config` prints only project, language, typography, statuses and
+ * section_titles (other keys are named on stderr as ignored, their values are never printed);
+ * a key that looks like a token only warns, it does not make the file safe to commit secrets in.
+ * Server text is stripped of terminal control sequences before it is printed.
  *
  * OAuth: this fallback client is PAT-only on purpose. When an agent connects the Sprintree MCP
  * server with OAuth, that session (access/refresh tokens) lives in the agent's own keychain and
@@ -28,20 +35,36 @@
  * A refusal (HTTP error, JSON-RPC error, isError, or a text answer starting with "Error:")
  * exits 1, so a failed write is never read as success.
  */
-import { readFileSync, existsSync, statSync, realpathSync } from "node:fs";
+import { readFileSync, existsSync, statSync, lstatSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 // One version source. A constant (not a read of ../../../package.json) so it keeps working when
-// the skill folder is copied alone. A test (and the A3 version check) keeps it equal to package.json.
+// the skill folder is copied alone. A test (and scripts/check-version.mjs) keeps it equal to package.json.
 export const VERSION = "0.1.0";
 const DEFAULT_URL = "https://sprintree.com/mcp";
 const DEFAULT_TIMEOUT_MS = 30000;
-const REAL_FS = { existsSync, statSync, readFileSync };
-const KEY_RE = /sprintree\.com\/p\/([A-Za-z][A-Za-z0-9]{0,9})\b/;
+const MAX_TIMEOUT_MS = 600000;
+const PROTOCOL_VERSION = "2025-06-18";
+const REAL_FS = { existsSync, statSync, lstatSync, realpathSync, readFileSync };
+// The server's project key rule. Doc links and `.sprintree.json` are both checked against it.
+const KEY_CHARS = "[A-Za-z][A-Za-z0-9]{0,9}";
+const KEY_RE = new RegExp(`sprintree\\.com/p/(${KEY_CHARS})\\b`);
+const PROJECT_RE = new RegExp(`^${KEY_CHARS}$`);
+const PLACEHOLDER_KEY = "KEY"; // the template link is https://sprintree.com/p/KEY
+const KNOWN_CONFIG_KEYS = ["project", "language", "typography", "statuses", "section_titles"];
 const DOC_FILES = ["AGENTS.md", "CLAUDE.md", "GEMINI.md", path.join(".claude", "CLAUDE.md")];
+const PAT_HINT = "tokens start with itn_; create one under Settings -> API & MCP -> Personal access tokens";
 
-class CliError extends Error {}
+/** Decode a text file: strips a UTF-8 BOM, reads UTF-16LE (FF FE), refuses UTF-16BE (FE FF). */
+function decodeText(data, label = "file") {
+  if (typeof data === "string") return data.replace(/^\uFEFF/, "");
+  const b = Buffer.from(data);
+  if (b[0] === 0xff && b[1] === 0xfe) return b.subarray(2).toString("utf16le");
+  if (b[0] === 0xfe && b[1] === 0xff) throw new Error(`${label} is UTF-16BE, which is not supported; save it as UTF-8`);
+  if (b[0] === 0xef && b[1] === 0xbb && b[2] === 0xbf) return b.subarray(3).toString("utf8");
+  return b.toString("utf8");
+}
 
 /** Walk from `dir` up to the filesystem root (stops after the first dir holding .git). */
 export function* ancestors(dir, { path: p = path, fs = REAL_FS } = {}) {
@@ -68,9 +91,45 @@ function suspiciousPaths(obj, prefix = "") {
   return found;
 }
 
+function checkProjectKey(key, where) {
+  if (typeof key !== "string" || !PROJECT_RE.test(key)) {
+    throw new Error(`${where}: invalid project key (1 to 10 letters or digits, starting with a letter, like the key in a Sprintree URL)`);
+  }
+  if (key.toUpperCase() === PLACEHOLDER_KEY) {
+    throw new Error(`${where}: the project key is still the placeholder ${PLACEHOLDER_KEY}; replace it with your project's key (list_projects shows it)`);
+  }
+}
+
+/** Read and parse one `.sprintree.json`: no symlink, no escape from its directory, never echoes file content. */
+function readConfigFile(f, dir, p, fs) {
+  let st;
+  try {
+    st = fs.lstatSync(f);
+  } catch (e) {
+    if (e?.code === "ENOENT" || e?.code === "ENOTDIR") return null;
+    throw e;
+  }
+  if (st.isSymbolicLink()) throw new Error(`${f} is a symlink; refusing to read it (put a regular file there)`);
+  if (!st.isFile()) return null;
+  const rel = p.relative(fs.realpathSync(dir), fs.realpathSync(f));
+  if (rel === ".." || rel.startsWith(".." + p.sep) || p.isAbsolute(rel)) {
+    throw new Error(`${f} resolves outside the directory it was found in; refusing to read it`);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(decodeText(fs.readFileSync(f), f));
+  } catch (e) {
+    if (/UTF-16BE/.test(e?.message ?? "")) throw e;
+    throw new Error(`${f} is not valid JSON`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`${f} must contain a JSON object`);
+  return parsed;
+}
+
 /**
  * Project config: `.sprintree.json` (nearest wins), then a `sprintree.com/p/<KEY>` link in a doc file.
- * opts: { path (default node:path, pass path.win32 to test Windows paths), fs, warn(line) }.
+ * Only the known keys are returned. opts: { path (default node:path, pass path.win32 to test Windows
+ * paths), fs, warn(line) }.
  */
 export function resolveConfig(dir, opts = {}) {
   const p = opts.path ?? path;
@@ -79,24 +138,25 @@ export function resolveConfig(dir, opts = {}) {
   let source = null;
   for (const d of ancestors(dir, { path: p, fs })) {
     const f = p.join(d, ".sprintree.json");
-    if (fs.existsSync(f) && fs.statSync(f).isFile()) {
-      let parsed;
-      try {
-        parsed = JSON.parse(fs.readFileSync(f, "utf8"));
-      } catch (e) {
-        throw new CliError(`${f} is not valid JSON: ${e.message}`);
+    const parsed = readConfigFile(f, d, p, fs);
+    if (!parsed) continue;
+    for (const k of KNOWN_CONFIG_KEYS) if (Object.hasOwn(parsed, k)) config[k] = parsed[k];
+    if (Object.hasOwn(parsed, "project")) checkProjectKey(parsed.project, f);
+    source = f;
+    const ignored = Object.keys(parsed).filter((k) => !KNOWN_CONFIG_KEYS.includes(k));
+    const bad = suspiciousPaths(parsed);
+    if (opts.warn) {
+      if (ignored.length) {
+        opts.warn(`Warning: ${f}: ignored unknown key(s): ${ignored.map((k) => scrub(k, {})).join(", ")} (only ${KNOWN_CONFIG_KEYS.join(", ")} are used)`);
       }
-      Object.assign(config, parsed);
-      source = f;
-      const bad = suspiciousPaths(parsed);
-      if (bad.length && opts.warn) {
+      if (bad.length) {
         opts.warn(
           `Warning: ${f} has ${bad.length === 1 ? "a key that looks" : "keys that look"} like a token (${bad.join(", ")}). ` +
             "Never commit tokens: keep them in the SPRINTREE_TOKEN environment variable and remove them from this file."
         );
       }
-      break;
     }
+    break;
   }
   if (!config.project) {
     for (const d of ancestors(dir, { path: p, fs })) {
@@ -105,6 +165,7 @@ export function resolveConfig(dir, opts = {}) {
         if (!fs.existsSync(f)) continue;
         const m = KEY_RE.exec(fs.readFileSync(f, "utf8"));
         if (m) {
+          checkProjectKey(m[1], f);
           config.project = m[1].toUpperCase();
           source = source ?? f;
           return { ...config, _source: source };
@@ -121,21 +182,24 @@ export function checkMcpUrl(raw) {
   try {
     u = new URL(raw);
   } catch {
-    throw new CliError(`SPRINTREE_MCP_URL is not a valid URL: ${raw}`);
+    throw new Error(`SPRINTREE_MCP_URL is not a valid URL: ${raw}`);
   }
   const host = u.hostname.replace(/^\[|\]$/g, "");
   const local = host === "localhost" || host === "127.0.0.1" || host === "::1";
   if (u.protocol === "https:" || (u.protocol === "http:" && local)) return u.href;
-  throw new CliError(
+  throw new Error(
     `SPRINTREE_MCP_URL must be https (plain http is only allowed for localhost, 127.0.0.1 and ::1), got ${u.protocol}//${u.host}`
   );
 }
 
-/** True when this module is the process entry point: realpath on both sides (symlinks, npm shims, drive-letter case). */
-export function isMainModule(argv1, metaUrl, { realpath = realpathSync, toPath = fileURLToPath } = {}) {
+/**
+ * True when this module is the process entry point. Compares realpaths, so a symlink (for example a
+ * node_modules/.bin link) and a different Windows drive-letter case still count. Shared by the scripts.
+ */
+export function isMainModule(argv1, metaUrl) {
   if (!argv1) return false;
   try {
-    return realpath(argv1) === realpath(toPath(metaUrl));
+    return realpathSync(argv1) === realpathSync(fileURLToPath(metaUrl));
   } catch {
     return false;
   }
@@ -169,30 +233,54 @@ function pickMessage(text, id) {
 function authHeader(env) {
   const t = (env.SPRINTREE_TOKEN || "").trim();
   if (!t) {
-    throw new CliError(
-      "No token. Set SPRINTREE_TOKEN to a Sprintree personal access token (itn_..., Settings -> API & MCP -> Personal access tokens), " +
+    throw new Error(
+      `No token. Set SPRINTREE_TOKEN to a Sprintree personal access token (${PAT_HINT}), ` +
         "or connect the Sprintree MCP server in your agent (OAuth) and use its tools directly."
     );
   }
   return /^Bearer\s/i.test(t) ? t : `Bearer ${t}`;
 }
 
-/** Remove the token (and its bare value) from any text before it can reach a terminal. */
+// Terminal control sequences a hostile server could send: OSC/DCS/APC/PM/SOS strings (OSC 52 writes the
+// clipboard), CSI and other ESC sequences, then every remaining C0/C1 control except \n and \t.
+const STRING_SEQ_RE = /\u001b[\]PX^_][^\u0007\u001b]*(?:\u0007|\u001b\\)?/g;
+const ESC_SEQ_RE = /\u001b(?:\[[0-?]*[ -/]*[@-~]?|[ -/]*[0-~]?)/g;
+const CONTROL_RE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g;
+
+/** Server text made safe to print: control sequences removed first (so one cannot split the token), then the token. */
 function scrub(text, env) {
+  const clean = String(text).replace(STRING_SEQ_RE, "").replace(ESC_SEQ_RE, "").replace(CONTROL_RE, "");
   const t = (env.SPRINTREE_TOKEN || "").trim().replace(/^Bearer\s+/i, "");
-  return t && t.length >= 6 ? String(text).split(t).join("[token]") : String(text);
+  return t && t.length >= 6 ? clean.split(t).join("[token]") : clean;
 }
 
 function timeoutMs(env) {
-  const n = Number(env.SPRINTREE_TIMEOUT_MS);
-  return Number.isFinite(n) && n > 0 ? n : DEFAULT_TIMEOUT_MS;
+  const raw = env.SPRINTREE_TIMEOUT_MS;
+  if (raw === undefined) return DEFAULT_TIMEOUT_MS;
+  const n = /^[0-9]+$/.test(raw) ? Number(raw) : NaN;
+  if (!(n >= 1 && n <= MAX_TIMEOUT_MS)) {
+    throw new Error(`SPRINTREE_TIMEOUT_MS must be a whole number of milliseconds from 1 to ${MAX_TIMEOUT_MS} (default ${DEFAULT_TIMEOUT_MS})`);
+  }
+  return n;
 }
 
-function makeClient({ fetchImpl, env }) {
+/** What to tell the user about a failed fetch: the cause code and the host, never the path, query, userinfo or token. */
+function networkMessage(e, url) {
+  const cause = e?.cause;
+  if (/redirect/i.test(String(cause?.message ?? e?.message ?? ""))) {
+    return "server redirected; set SPRINTREE_MCP_URL to the final URL";
+  }
+  const code = String(cause?.code ?? e?.code ?? "").replace(/[^A-Za-z0-9_]/g, "") || "unknown error";
+  return `fetch failed: ${code} ${new URL(url).host}`;
+}
+
+/** JSON-RPC client over Streamable HTTP. `connect()` runs the initialize handshake; `rpc(method, params)` returns the result. */
+export function makeClient({ fetchImpl, env }) {
   const url = checkMcpUrl(env.SPRINTREE_MCP_URL || DEFAULT_URL);
   const auth = authHeader(env);
   const ms = timeoutMs(env);
   let sid = null;
+  let protocol = null;
   let seq = 0;
 
   async function rpc(method, params, notify = false) {
@@ -202,41 +290,54 @@ function makeClient({ fetchImpl, env }) {
       Authorization: auth,
     };
     if (sid) headers["Mcp-Session-Id"] = sid;
+    if (protocol) headers["MCP-Protocol-Version"] = protocol;
     const body = { jsonrpc: "2.0", method, params };
     if (!notify) body.id = ++seq;
     let res;
     let text;
     try {
-      res = await fetchImpl(url, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(ms) });
-      sid = res.headers?.get?.("mcp-session-id") ?? sid;
+      res = await fetchImpl(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+        redirect: "error",
+        signal: AbortSignal.timeout(ms),
+      });
+      sid = res.headers.get("mcp-session-id") ?? sid;
       text = await res.text();
     } catch (e) {
       if (e?.name === "TimeoutError" || e?.name === "AbortError") {
-        throw new CliError(`request to ${new URL(url).host} timed out after ${ms} ms (set SPRINTREE_TIMEOUT_MS to change)`);
+        throw new Error(`request to ${new URL(url).host} timed out after ${ms} ms (set SPRINTREE_TIMEOUT_MS to change)`);
       }
-      throw e;
+      throw new Error(networkMessage(e, url));
     }
     if (notify) return null;
-    if (res.status === 401) throw new CliError("HTTP 401: invalid, expired or revoked token (create a new one in Settings -> API & MCP -> Personal access tokens)");
-    if (res.status === 403) throw new CliError("HTTP 403: the token cannot do this (read-only token on a write tool?)");
-    if (!res.ok) throw new CliError(`HTTP ${res.status}: ${scrub(text.slice(0, 300), env)}`);
+    const said = () => {
+      const t = scrub(text, env).trim().slice(0, 300);
+      return t ? ` Server said: ${t}` : "";
+    };
+    if (res.status === 401) throw new Error(`HTTP 401: invalid, expired or revoked token (${PAT_HINT}).${said()}`);
+    if (res.status === 403) throw new Error(`HTTP 403: the token cannot do this (read-only token on a write tool?) - ${PAT_HINT}.${said()}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${scrub(text, env).slice(0, 300)}`);
     let msg;
     try {
       msg = pickMessage(text, body.id);
     } catch {
-      throw new CliError(`Unreadable answer to ${method}: ${scrub(String(text).slice(0, 200), env)}`);
+      throw new Error(`Unreadable answer to ${method}: ${scrub(text, env).slice(0, 200)}`);
     }
-    if (!msg) throw new CliError(`no answer with id ${body.id} to ${method} in the response`);
-    if (msg.error) throw new CliError(`RPC ${method}: ${scrub(JSON.stringify(msg.error), env)}`);
+    if (!msg) throw new Error(`no answer with id ${body.id} to ${method} in the response`);
+    if (msg.error) throw new Error(`RPC ${method}: ${scrub(JSON.stringify(msg.error), env)}`);
     return msg.result;
   }
 
   async function connect() {
-    await rpc("initialize", {
-      protocolVersion: "2025-06-18",
+    const init = await rpc("initialize", {
+      protocolVersion: PROTOCOL_VERSION,
       capabilities: {},
       clientInfo: { name: "sprintree-agent", version: VERSION },
     });
+    const negotiated = init?.protocolVersion;
+    protocol = typeof negotiated === "string" && /^\d{4}-\d{2}-\d{2}$/.test(negotiated) ? negotiated : PROTOCOL_VERSION;
     await rpc("notifications/initialized", {}, true);
   }
 
@@ -261,19 +362,14 @@ export async function run(argv, deps = {}) {
       out(VERSION);
       return 0;
     }
-    if (Number(String(nodeVersion).split(".")[0]) < 18 || typeof fetchImpl !== "function") {
-      throw new CliError(
-        `st.mjs needs Node.js 18 or newer (global fetch); this is Node ${nodeVersion}${typeof fetchImpl === "function" ? "" : " without fetch"}. Upgrade Node: https://nodejs.org`
-      );
-    }
     if (cmd === "key" || cmd === "config") {
-      const cfg = resolveConfig(path.resolve(cwd, a1 || "."), { warn: err });
+      const { _source, ...cfg } = resolveConfig(path.resolve(cwd, a1 || "."), { warn: err });
       if (cmd === "config") {
         out(JSON.stringify(cfg, null, 2));
         return 0;
       }
       if (!cfg.project) {
-        throw new CliError(
+        throw new Error(
           "No project key. Put a `sprintree.com/p/<KEY>` link in AGENTS.md/CLAUDE.md/GEMINI.md, " +
             'or `{"project":"KEY"}` in .sprintree.json. Otherwise find it with list_projects.'
         );
@@ -281,53 +377,56 @@ export async function run(argv, deps = {}) {
       out(cfg.project);
       return 0;
     }
-    if (!["tools", "schema", "call"].includes(cmd)) {
-      throw new CliError("usage: st.mjs tools | schema <tool> | call <tool> <json|@file.json|-> | key [dir] | config [dir] | version");
+    if (Number(String(nodeVersion).split(".")[0]) < 18 || typeof fetchImpl !== "function") {
+      throw new Error(
+        `st.mjs needs Node.js 18 or newer (global fetch); this is Node ${nodeVersion}${typeof fetchImpl === "function" ? "" : " without fetch"}. Upgrade Node: https://nodejs.org`
+      );
     }
-    if (cmd === "schema" && !a1) throw new CliError("usage: st.mjs schema <tool>");
-    if (cmd === "call" && !a1) throw new CliError("usage: st.mjs call <tool> '<json>' | @file.json | -");
+    if (!["tools", "schema", "call"].includes(cmd)) {
+      throw new Error("usage: st.mjs tools | schema <tool> | call <tool> <json|@file.json|-> | key [dir] | config [dir] | version");
+    }
+    if (cmd === "schema" && !a1) throw new Error("usage: st.mjs schema <tool>");
+    if (cmd === "call" && !a1) throw new Error("usage: st.mjs call <tool> '<json>' | @file.json | -");
     let args = {};
     if (cmd === "call") {
       let raw = a2 ?? "{}";
       if (raw === "-") {
         raw = await readStdin();
-        if (!raw.trim()) throw new CliError("no JSON arguments on stdin");
+        if (!raw.trim()) throw new Error("no JSON arguments on stdin");
       } else if (raw.startsWith("@")) {
         const f = path.resolve(cwd, raw.slice(1));
-        if (!existsSync(f)) throw new CliError(`argument file not found: ${f}`);
-        raw = readFileSync(f, "utf8");
+        if (!existsSync(f)) throw new Error(`argument file not found: ${f}`);
+        raw = decodeText(readFileSync(f), f);
       }
       try {
         args = JSON.parse(raw);
       } catch (e) {
-        throw new CliError(`arguments are not valid JSON: ${e.message}`);
+        throw new Error(`arguments are not valid JSON: ${e.message}`);
       }
     }
     const client = makeClient({ fetchImpl, env });
     await client.connect();
     if (cmd === "tools" || cmd === "schema") {
-      const { tools } = await client.rpc("tools/list", {});
+      const answer = await client.rpc("tools/list", {});
+      if (!Array.isArray(answer?.tools)) throw new Error("the tools/list answer has no `tools` array");
+      const tools = answer.tools;
       if (cmd === "tools") {
-        for (const t of tools) out(`${t.name}(${Object.keys(t.inputSchema?.properties ?? {}).join(", ")})`);
+        for (const t of tools) out(scrub(`${t.name}(${Object.keys(t.inputSchema?.properties ?? {}).join(", ")})`, env));
       } else {
-        const t = tools.find((x) => x.name === a1);
-        if (!t) throw new CliError(`no such tool: ${a1}`);
-        out(t.description);
-        out(JSON.stringify(t.inputSchema, null, 2));
+        const t = tools.find((x) => scrub(x?.name, env) === a1);
+        if (!t) throw new Error(`no such tool: ${a1}`);
+        out(scrub(t.description ?? "", env));
+        out(scrub(JSON.stringify(t.inputSchema, null, 2), env));
       }
       return 0;
     }
     const result = await client.rpc("tools/call", { name: a1, arguments: args });
-    const text = scrub((result.content ?? []).map((c) => c.text ?? "").join("\n"), env);
-    out(text);
-    // Sprintree reports refusals as normal content starting with "Error:".
-    return result.isError || /^Error:/.test(text.trim()) ? 1 : 0;
+    const texts = (Array.isArray(result?.content) ? result.content : []).map((c) => String(c?.text ?? ""));
+    out(scrub(texts.join("\n"), env));
+    // Sprintree reports refusals as normal content starting with "Error:", in any content item.
+    return result?.isError || texts.some((t) => /^Error:/.test(t.trimStart())) ? 1 : 0;
   } catch (e) {
-    if (!(e instanceof CliError)) {
-      err(`Error: ${scrub(e?.message ?? e, env)}`);
-      return 1;
-    }
-    err(`Error: ${e.message}`);
+    err(`Error: ${scrub(e?.message ?? e, env)}`);
     return 1;
   }
 }
@@ -335,7 +434,7 @@ export async function run(argv, deps = {}) {
 async function readProcessStdin() {
   const chunks = [];
   for await (const c of process.stdin) chunks.push(c);
-  return Buffer.concat(chunks).toString("utf8").replace(/^\uFEFF/, "");
+  return decodeText(Buffer.concat(chunks), "stdin");
 }
 
 if (isMainModule(process.argv[1], import.meta.url)) {
