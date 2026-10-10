@@ -17,7 +17,8 @@ node scripts/lint-json.mjs
 node scripts/check-version.mjs        # package.json = plugin.json = gemini-extension.json = st.mjs VERSION = CHANGELOG top heading
 claude plugin validate . && claude plugin validate .claude-plugin/marketplace.json
 docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:latest
-docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:latest detect --source /repo --log-opts=--all --no-banner   # full history
+# gitleaks needs a real .git dir: in a worktree (.git is a file) it scans 0 commits, so scan a clone (check "N commits scanned" > 0)
+rm -rf "$SCRATCH/gl" && git clone -q --no-local . "$SCRATCH/gl" && docker run --rm -v "$SCRATCH/gl:/repo" zricethezav/gitleaks:latest detect --source /repo --log-opts=--all --no-banner
 ```
 Evidence is the output (`# pass N`, `# fail 0`, `no leaks found`), not the exit code. Keep this a superset of `.github/workflows/test.yml`.
 
