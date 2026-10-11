@@ -872,18 +872,34 @@ test("a .git that is a symlink counts outside the home directory only when the l
   assert.equal(at({ "/shared/.git": other, "/victim/dir": other }), null, "both are someone else's");
 });
 
-test("win32: key lookup from a nested dir finds AGENTS.md and .sprintree.json", () => {
+test("win32: key lookup from a nested dir inside the home directory finds AGENTS.md and .sprintree.json (no uid, as on Windows, on every host)", () => {
   const w = path.win32;
-  const fs = fakeFs({ "C:\\repo\\.git": null, "C:\\repo\\AGENTS.md": "Board https://sprintree.com/p/spd/board" });
-  assert.equal(resolveConfig("C:\\repo\\src\\deep", { path: w, fs, home: "C:\\" }).project, "SPD");
-  const fs2 = fakeFs({
-    "C:\\repo\\.git": null,
-    "C:\\repo\\AGENTS.md": "sprintree.com/p/OLD",
-    "C:\\repo\\src\\.sprintree.json": '{"project":"NEW"}',
-  });
-  const cfg = resolveConfig("C:\\repo\\src\\deep", { path: w, fs: fs2, home: "C:\\" });
-  assert.equal(cfg.project, "NEW");
-  assert.equal(cfg._source, "C:\\repo\\src\\.sprintree.json");
+  const home = "C:\\Users\\me";
+  withoutUid(() => asPlatform("win32", () => {
+    const fs = fakeFs({ "C:\\Users\\me\\repo\\.git": null, "C:\\Users\\me\\repo\\AGENTS.md": "Board https://sprintree.com/p/spd/board" });
+    assert.equal(resolveConfig("C:\\Users\\me\\repo\\src\\deep", { path: w, fs, home }).project, "SPD");
+    const fs2 = fakeFs({
+      "C:\\Users\\me\\repo\\.git": null,
+      "C:\\Users\\me\\repo\\AGENTS.md": "sprintree.com/p/OLD",
+      "C:\\Users\\me\\repo\\src\\.sprintree.json": '{"project":"NEW"}',
+    });
+    const cfg = resolveConfig("C:\\Users\\me\\repo\\src\\deep", { path: w, fs: fs2, home });
+    assert.equal(cfg.project, "NEW");
+    assert.equal(cfg._source, "C:\\Users\\me\\repo\\src\\.sprintree.json");
+  }));
+});
+
+test("win32 outside the home directory (no uid): only the starting directory is read, a nested lookup finds nothing; a drive root as home is no home", () => {
+  const w = path.win32;
+  const files = { "C:\\repo\\.git": null, "C:\\repo\\AGENTS.md": "Board https://sprintree.com/p/spd/board", "C:\\repo\\src\\deep": null };
+  withoutUid(() => asPlatform("win32", () => {
+    for (const home of ["C:\\Users\\me", "C:\\"]) {
+      const o = { path: w, fs: fakeFs(files), home };
+      assert.equal(resolveConfig("C:\\repo\\src\\deep", o).project, undefined, `nested, home ${home}`);
+      assert.equal(repoRoot("C:\\repo\\src\\deep", o), null, `home ${home}`);
+      assert.equal(resolveConfig("C:\\repo", o).project, "SPD", `the starting directory itself is read, home ${home}`);
+    }
+  }));
 });
 
 /** Deletes the `.git` folder of a tmpRepo, so the directory is no repo. */
