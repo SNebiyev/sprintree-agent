@@ -89,7 +89,8 @@ Report a vulnerability: see `SECURITY.md`.
 
 Link the board in your repo's `AGENTS.md`/`CLAUDE.md`/`GEMINI.md` as `https://sprintree.com/p/<KEY>`, or add a
 `.sprintree.json` (copy `.sprintree.example.json`, which shows all five keys). What each key does is described
-once, in [SKILL.md, "Configuration"](skills/sprintree/SKILL.md#configuration-all-optional).
+once, in [SKILL.md, "Configuration"](skills/sprintree/SKILL.md#configuration-all-optional). The repo root is the directory
+holding `.git`: inside your home directory the search goes up to it, outside it only a `.git` you own counts (on Windows only the start directory is read there).
 
 ## The fallback client
 
@@ -106,8 +107,9 @@ node skills/sprintree/scripts/st.mjs version
 - The examples above assume a clone of this repo. Installed as a skill, the client is the skill's own `scripts/st.mjs`:
   `~/.agents/skills/sprintree/` (Codex, all repos) or `.agents/skills/sprintree/` (Codex, one repo),
   `~/.gemini/extensions/sprintree/skills/sprintree/` (Gemini CLI), or `~/.claude/plugins/cache/sprintree/sprintree/<version>/skills/sprintree/` (Claude Code plugin cache).
-- The inline `'{...}'` examples are fixed JSON you wrote yourself. How text from a card or a comment reaches `st.mjs`
-  (a file the agent writes outside the repo, passed as `@<absolute path>`) is described once, in
+- Inline `'{...}'` JSON is only for plain words you typed yourself: no quote, `$`, backtick or `\`, and nothing taken from the repo or
+  from card, comment or config text. Every other argument reaches `st.mjs` as a file the agent writes outside the repo, passed as
+  `@<absolute path>`, described once in
   [SKILL.md, Step 0](skills/sprintree/SKILL.md#step-0---connect-and-resolve-the-project).
 - **Windows PowerShell 5.1** mangles quotes in inline JSON, so every call with arguments uses `@<absolute path>`. Let your agent
   write that file with its own file-writing tool: it writes UTF-8, while PowerShell 5.1 writes ASCII or UTF-16 by default, which

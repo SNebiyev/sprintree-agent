@@ -89,7 +89,7 @@ first page is everything, and never report "no such card" or "nothing open" from
 
 ### Configuration (all optional)
 
-`.sprintree.json` at the repo root:
+`.sprintree.json` at the repo root (the directory holding `.git`; outside your home directory only a `.git` you own counts, and on Windows only the start directory is read there):
 
 ```json
 {

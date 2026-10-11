@@ -3,7 +3,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { MIN_NODE, KNOWN_CONFIG_KEYS } from "../skills/sprintree/scripts/st.mjs";
+import { MIN_NODE, KNOWN_CONFIG_KEYS, DOC_NAMES } from "../skills/sprintree/scripts/st.mjs";
+import { DOCS } from "../scripts/check-tools.mjs";
 import { ROOT, TOKEN_CASES, decodeEscapes } from "../test-support/helpers.mjs";
 
 const read = (f) => readFileSync(path.join(ROOT, f), "utf8");
@@ -13,6 +14,30 @@ const AGENTS = "templates/AGENTS.md";
 const README = "README.md";
 const ST = "skills/sprintree/scripts/st.mjs";
 
+// The patterns the guards below use. Each one is run against lines it must catch and lines it must let through: a guard that cannot go red guards nothing.
+const STDIN_DASH = /st\.mjs[^\n]* -(?=[\s`'")]|$)/m;
+const HERE_STRING = /@['"][ \t]*$/m;
+const NODE_18_X_Y = /(?<![\d.])18\.\d+\.\d+(?!\.?\d)/g;
+const INLINE_JSON = /st\.mjs\s+call\s+\S+\s+(?:'([^'\n]*)'|"([^"\n]*)")/g;
+const UNSAFE_INLINE = /[$`\\]/;
+
+test("the guards fire on a violating line and stay quiet on a clean one", () => {
+  const dash = ["`node st.mjs call x -`", "node st.mjs call x - ", "node st.mjs call x -", "(node st.mjs call x -)"];
+  for (const line of dash) assert.ok(STDIN_DASH.test(line), line);
+  for (const line of ["node st.mjs call x @f", "node st.mjs call x '{}'", "node st.mjs call a-b"]) assert.ok(!STDIN_DASH.test(line), line);
+  for (const line of ["$a = @'", '$a = @"', "$a = @'  "]) assert.ok(HERE_STRING.test(line), line);
+  for (const line of ["mail me@'x'", "@file"]) assert.ok(!HERE_STRING.test(line), line);
+  for (const line of ["Tested on 18.19.0.", "18.19.0, then", "Node v18.20.1)", "18.0.0"]) assert.equal(line.match(NODE_18_X_Y)?.length, 1, line);
+  for (const line of ["version 18.19.0.1", "1.18.19.0", "118.19.0", "18.19"]) assert.equal(line.match(NODE_18_X_Y), null, line);
+  const inline = (line) => [...line.matchAll(INLINE_JSON)].map((m) => m[1] ?? m[2]);
+  assert.deepEqual(inline("`node st.mjs call search_issues '{\"query\":\"$x\"}'`"), ['{"query":"$x"}']);
+  // in double quotes the first escaped quote ends what is read, but a backslash is already enough to be caught
+  assert.ok(UNSAFE_INLINE.test(inline('`node st.mjs call search_issues "{\\"query\\":\\"$x\\"}"`')[0]));
+  assert.deepEqual(inline('node st.mjs call x "$HOME"'), ["$HOME"]);
+  for (const bad of ['{"q":"$x"}', '{"q":"`x`"}', '{"q":"a\\b"}', '{\\"q\\":1}']) assert.ok(UNSAFE_INLINE.test(bad), bad);
+  assert.ok(!UNSAFE_INLINE.test('{"project":"KEY","category":"todo"}'));
+});
+
 test("no doc offers a shell pipe, a stdin form, a heredoc or a here-string for text the agent did not write", () => {
   for (const f of [SKILL, AGENTS, README, "GEMINI.md", "CONTRIBUTING.md", ST]) {
     const text = read(f);
@@ -20,8 +45,8 @@ test("no doc offers a shell pipe, a stdin form, a heredoc or a here-string for t
     assert.ok(!/(^|\n)\s*(echo|printf|cat)\b[^\n]*st\.mjs/.test(text), `${f}: echo/printf/cat example`);
     assert.ok(!/<<\s*'?EOF/.test(text), `${f}: heredoc example`);
     assert.ok(!/<\s*args\.json/.test(text), `${f}: stdin redirect`);
-    assert.ok(!/st\.mjs[^\n]* -(\s|$)/m.test(text), `${f}: stdin \`-\` form`);
-    assert.ok(!/@['"][ \t]*$/m.test(text), `${f}: PowerShell here-string (@' or @" ending a line)`);
+    assert.ok(!STDIN_DASH.test(text), `${f}: stdin \`-\` form`);
+    assert.ok(!HERE_STRING.test(text), `${f}: PowerShell here-string (@' or @" ending a line)`);
   }
 });
 
@@ -54,7 +79,7 @@ test("the minimum Node version is stated once (MIN_NODE) and no doc says another
     for (const m of text.matchAll(/\b[Nn]ode(?:\.js)?\s+v?18(?!\.\d)/g)) assert.ok(false, `${f}: a bare "${m[0]}" (state ${MIN_NODE})`);
   }
   for (const f of [...NODE_FILES, ".github/workflows/test.yml", "package.json"]) {
-    for (const m of read(f).matchAll(/(?<![\d.])18\.\d+\.\d+(?![\d.])/g)) assert.equal(m[0], MIN_NODE, `${f}: "${m[0]}"`);
+    for (const m of read(f).matchAll(NODE_18_X_Y)) assert.equal(m[0], MIN_NODE, `${f}: "${m[0]}"`);
   }
   assert.ok(seen >= 4, "the docs should state the minimum somewhere");
 });
@@ -73,7 +98,8 @@ test("line endings are LF, so a Windows checkout reads the same files", () => {
 });
 
 test("SKILL.md lists the doc files in the order st.mjs reads them", () => {
-  assert.ok(flat(read(SKILL)).includes("`AGENTS.md`, `CLAUDE.md`, `GEMINI.md` or `.claude/CLAUDE.md`"));
+  const names = DOC_NAMES.map((n) => `\`${n}\``);
+  assert.ok(flat(read(SKILL)).includes(`${names.slice(0, -1).join(", ")} or ${names.at(-1)}`));
 });
 
 test("the token-location sentence is identical in SKILL.md and the AGENTS.md template", () => {
@@ -118,7 +144,7 @@ test("the gitleaks rule reports what TOKEN_CASES says, in the decoded text, as g
 test("inline JSON is only for plain typed words: both docs that carry the rule state it, and no example breaks it", () => {
   for (const f of [SKILL, AGENTS]) assert.match(flat(read(f)), /no quote, `\$`, backtick or `\\`, and nothing (taken )?from the repo/, f);
   assert.ok(flat(read(SKILL)).includes("a keyword from the repo or a card goes through `@file`"), "SKILL.md Step 2 points back to the rule");
-  for (const f of [SKILL, AGENTS, README, "GEMINI.md"]) {
-    for (const m of read(f).matchAll(/st\.mjs\s+call\s+\S+\s+'([^'\n]*)'/g)) assert.ok(!/[$`\\]/.test(m[1]), `${f}: inline JSON with $, a backtick or a backslash: ${m[0]}`);
+  for (const f of DOCS) {
+    for (const m of read(f).matchAll(INLINE_JSON)) assert.ok(!UNSAFE_INLINE.test(m[1] ?? m[2]), `${f}: inline JSON with $, a backtick or a backslash: ${m[0]}`);
   }
 });

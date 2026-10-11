@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
-  run, resolveConfig, isMainModule, VERSION, ancestors, repoRoot, checkMcpUrl, MIN_NODE, KNOWN_CONFIG_KEYS, listTools, stripControls, findDocKey,
+  run, resolveConfig, isMainModule, VERSION, ancestors, repoRoot, checkMcpUrl, MIN_NODE, KNOWN_CONFIG_KEYS, listTools, stripControls, findDocKey, DOC_NAMES,
 } from "../skills/sprintree/scripts/st.mjs";
 import { tmpDir, reply, mockFetch, childEnv, TOKEN_CASES } from "../test-support/helpers.mjs";
 
@@ -17,6 +17,10 @@ const PAT_PLACE = "Settings -> API & MCP -> Personal access tokens";
 const win = process.platform === "win32";
 // Control characters and invisible format characters that must never reach a terminal (ZWJ, ZWNJ, LRM and RLM are real text and stay).
 const RAW_BAD = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u00ad\u061c\u200b\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\ufff9-\ufffb]|[\u{e0000}-\u{e007f}]/u;
+
+// Code points that carry hidden ASCII or hide a refusal and that no list of "format characters" names: Mongolian free variation
+// selectors, unassigned default-ignorables, the unassigned part of the tag block, the specials block.
+const INVISIBLE_ASCII_CARRIERS = ["\u180b", "\u180c", "\u180d", "\u180f", "\u2065", "\ufff0", "\ufff8", "\u{e0080}", "\u{e00ff}", "\u{e01f0}", "\u{e0fff}"];
 
 // ---- helpers ---------------------------------------------------------------------------------
 
@@ -255,7 +259,7 @@ test("key without any link exits 1 and the hint names every doc file that is rea
   const h = harness(() => null, { env: {}, cwd: root });
   assert.equal(await h.go(["key"]), 1);
   assert.match(h.errs[0], /No project key/);
-  assert.match(h.errs[0], /AGENTS\.md, CLAUDE\.md, GEMINI\.md or \.claude\/CLAUDE\.md/);
+  assert.ok(h.errs[0].includes(`${DOC_NAMES.slice(0, -1).join(", ")} or ${DOC_NAMES.at(-1)}`), h.errs[0]);
   assert.ok(h.errs[0].includes(".sprintree.json"));
   const missing = harness(() => null, { env: {}, cwd: root });
   assert.equal(await missing.go(["key", path.join(root, "no", "such", "dir")]), 1, "a directory that does not exist is no crash");
@@ -677,21 +681,33 @@ test("isMainModule: a symlink to the script counts as the script (unit test, no 
 
 /**
  * A stand-in file system: files is {path: string | null (a directory)}. Options: `real` maps a path to the real path it
- * resolves to (a list: one entry per resolution), `uid` owns every file, `ino` overrides the inode a path reports through
- * statSync (not through fstatSync), `sizes` the size a path reports, `readlink` what /proc/self/fd/N points to (a function
- * of the opened path), `calls` collects the flags and `opened` the path of every openSync.
+ * resolves to (a list: one entry per resolution), so such a path is a link, `uid` owns every file and `owners` overrides it
+ * per path (lstatSync reads the link's owner, statSync and fstatSync the owner of what it leads to), `ino` overrides the
+ * inode a path reports through statSync (not through fstatSync), `sizes` the size a path reports, `readlink` what
+ * /proc/self/fd/N points to (a function of the opened path), `chunk` the most bytes one readSync returns, and `opened`
+ * collects [path, flags] of every openSync.
  */
-function fakeFs(files, { real = {}, uid = process.getuid?.(), ino = {}, sizes = {}, notFileOnFstat = false, readlink = (p) => p, calls = [], opened = [] } = {}) {
+function fakeFs(files, { real = {}, uid = process.getuid?.(), owners = {}, ino = {}, sizes = {}, notFileOnFstat = false, readlink = (p) => p, chunk = Infinity, opened = [] } = {}) {
   const seen = new Map();
   const norm = (p) => p.toLowerCase();
   const set = new Map(Object.entries(files).map(([k, v]) => [norm(k), v]));
   const keys = [...set.keys()];
   const missing = () => Object.assign(new Error("ENOENT"), { code: "ENOENT" });
-  const stat = (p, viaFd) => {
+  const isLink = (p) => Object.hasOwn(real, p);
+  const stat = (p, viaFd, owner) => {
     if (!set.has(norm(p))) throw missing();
     const v = set.get(norm(p));
     const file = typeof v === "string" && !(viaFd && notFileOnFstat);
-    return { isFile: () => file, size: sizes[p] ?? (typeof v === "string" ? Buffer.byteLength(v) : 0), nlink: 1, uid, dev: 1, ino: (!viaFd && ino[p]) || keys.indexOf(norm(p)) + 1 };
+    const target = [].concat(real[p] ?? p)[0];
+    return {
+      isFile: () => file,
+      isSymbolicLink: () => owner && isLink(p),
+      size: sizes[p] ?? (typeof v === "string" ? Buffer.byteLength(v) : 0),
+      nlink: 1,
+      uid: owners[owner ? p : target] ?? uid,
+      dev: 1,
+      ino: (!viaFd && ino[p]) || keys.indexOf(norm(p)) + 1,
+    };
   };
   const fds = [];
   const cursor = [];
@@ -706,9 +722,10 @@ function fakeFs(files, { real = {}, uid = process.getuid?.(), ino = {}, sizes = 
       if (set.has(norm(p)) || keys.some((k) => k.startsWith(norm(p)))) return p;
       throw missing();
     },
-    statSync: (p) => stat(p, false),
-    openSync: (p, flags) => (calls.push(flags), opened.push(p), stat(p), fds.push(p) - 1, cursor.push(0), fds.length - 1),
-    fstatSync: (fd) => stat(fds[fd], true),
+    statSync: (p) => stat(p, false, false),
+    lstatSync: (p) => stat(p, false, true),
+    openSync: (p, flags) => (opened.push([p, flags]), stat(p), fds.push(p) - 1, cursor.push(0), fds.length - 1),
+    fstatSync: (fd) => stat(fds[fd], true, false),
     readlinkSync: (p) => {
       const m = /^\/proc\/self\/fd\/(\d+)$/.exec(p);
       if (!m) throw missing();
@@ -716,7 +733,7 @@ function fakeFs(files, { real = {}, uid = process.getuid?.(), ino = {}, sizes = 
     },
     readSync: (fd, buf, off, len) => {
       const data = Buffer.from(set.get(norm(fds[fd])));
-      const n = data.copy(buf, off, cursor[fd], cursor[fd] + len);
+      const n = data.copy(buf, off, cursor[fd], cursor[fd] + Math.min(len, chunk));
       cursor[fd] += n;
       return n;
     },
@@ -724,16 +741,21 @@ function fakeFs(files, { real = {}, uid = process.getuid?.(), ino = {}, sizes = 
   };
 }
 
-/** Runs `fn` as on Windows: process.getuid does not exist. */
-function withoutUid(fn) {
-  const saved = process.getuid;
-  process.getuid = undefined;
+/** Runs `fn` with `process[key]` set to `value`, then puts the original back. */
+function patched(key, value, fn) {
+  const saved = Object.getOwnPropertyDescriptor(process, key);
+  Object.defineProperty(process, key, { value, configurable: true, writable: true, enumerable: saved?.enumerable ?? true });
   try {
     return fn();
   } finally {
-    process.getuid = saved;
+    if (saved) Object.defineProperty(process, key, saved);
+    else delete process[key];
   }
 }
+/** Runs `fn` as on Windows: process.getuid does not exist. */
+const withoutUid = (fn) => patched("getuid", undefined, fn);
+/** Runs `fn` as on another OS: process.platform is `name`. */
+const asPlatform = (name, fn) => patched("platform", name, fn);
 
 test("win32: ancestors walk up to the repo root and stop there", () => {
   const w = path.win32;
@@ -789,10 +811,66 @@ test("outside the home directory a .git counts only when the current user owns i
   });
 });
 
-test("the home directory is compared by real path: a start directory reached through a link into it is inside", { skip: typeof process.getuid !== "function" }, () => {
-  const files = { "/work/.git": null, "/work/proj": null, "/home/me/proj": null };
-  const fs = fakeFs(files, { uid: process.getuid() + 1, real: { "/work/proj": "/home/me/proj" } });
-  assert.equal(repoRoot("/work/proj", { path: path.posix, fs, home: "/home/me" }), "/work", "inside the home directory ownership is not asked");
+const noUid = typeof process.getuid !== "function";
+
+test("the walk climbs the REAL path: a start reached through a link into the home directory is inside it, and a .git above the link is not a repo", () => {
+  const files = { "/work/.git": null, "/work/.sprintree.json": '{"project":"EVIL"}', "/work/proj": null, "/home/me/proj": null };
+  const real = { "/work/proj": "/home/me/proj" };
+  const o = { path: path.posix, home: "/home/me", fs: fakeFs(files, { real }) };
+  assert.equal(repoRoot("/work/proj", o), null);
+  assert.deepEqual([...ancestors("/work/proj", null, path.posix, o.fs)], ["/home/me/proj"]);
+  assert.equal(resolveConfig("/work/proj", o).project, undefined);
+  assert.equal(repoRoot("/work/proj", { ...o, fs: fakeFs({ ...files, "/home/me/.git": null }, { real }) }), "/home/me");
+  // a start directory that does not exist yet keeps the real path of the part that does
+  assert.equal(repoRoot("/work/proj/missing/deeper", o), null);
+  assert.deepEqual([...ancestors("/work/proj/missing", null, path.posix, o.fs)], ["/home/me/proj/missing"]);
+});
+
+test("win32: a junction into the home directory is walked as the real path (a .git planted above the junction is no repo); another drive is outside the home directory", () => {
+  const w = path.win32;
+  const files = { "C:\\.git": null, "C:\\.sprintree.json": '{"project":"EVIL"}', "C:\\dev\\notrepo\\sub": null, "C:\\Users\\Me\\dev\\notrepo\\sub": null, "D:\\x\\.git": null };
+  const fs = fakeFs(files, { real: { "C:\\dev\\notrepo\\sub": "C:\\Users\\Me\\dev\\notrepo\\sub" } });
+  const o = { path: w, fs, home: "C:\\Users\\Me" };
+  assert.equal(repoRoot("C:\\dev\\notrepo\\sub", o), null);
+  assert.equal(resolveConfig("C:\\dev\\notrepo\\sub", o).project, undefined);
+  // D:\x\y is on another drive: outside the home directory, so (no uid) only D:\x\y itself is looked at
+  withoutUid(() => assert.equal(repoRoot("D:\\x\\y", o), null));
+});
+
+test("the home directory is compared by real path: a link or an 8.3 name for it still makes the start directory inside", () => {
+  withoutUid(() => {
+    const fs = fakeFs({ "C:\\Users\\Me Full\\.git": null, "C:\\Users\\Me Full\\x": null }, { real: { "C:\\Users\\MEFULL~1": "C:\\Users\\Me Full" } });
+    assert.equal(repoRoot("C:\\Users\\Me Full\\x", { path: path.win32, fs, home: "C:\\Users\\MEFULL~1" }), "C:\\Users\\Me Full");
+  });
+  if (noUid) return;
+  const fs = fakeFs({ "/home/me/.git": null, "/home/me/proj": null }, { uid: process.getuid() + 1, real: { "/home/link": "/home/me" } });
+  assert.equal(repoRoot("/home/me/proj", { path: path.posix, fs, home: "/home/link" }), "/home/me", "inside the home directory ownership is not asked");
+});
+
+test("with no usable home directory (empty, relative, or a filesystem root) nothing is inside it: ownership is always required", { skip: noUid }, () => {
+  const me = process.getuid();
+  const files = { "/.git": null, "/srv/.git": null, "/srv/app/sub": null };
+  for (const home of ["", null, "relative/home", "/"]) {
+    const o = { path: path.posix, home };
+    assert.equal(repoRoot("/srv/app/sub", { ...o, fs: fakeFs(files, { uid: me + 1 }) }), null, `foreign .git, home ${JSON.stringify(home)}`);
+    assert.equal(repoRoot("/srv/app/sub", { ...o, fs: fakeFs(files) }), "/srv", `own .git, home ${JSON.stringify(home)}`);
+  }
+});
+
+test("a relative home directory is no home directory, even when it would contain the start directory", { skip: noUid }, () => {
+  const cwd = process.cwd();
+  const fs = fakeFs({ [path.join(cwd, ".git")]: null, [path.join(cwd, "sub")]: null }, { uid: process.getuid() + 1 });
+  assert.equal(repoRoot(path.join(cwd, "sub"), { fs, home: "." }), null);
+});
+
+test("a .git that is a symlink counts outside the home directory only when the link AND its target belong to the current user", { skip: noUid }, () => {
+  const other = process.getuid() + 1;
+  const files = { "/shared/.git": null, "/victim/dir": null, "/shared/proj/sub": null };
+  const at = (owners) => repoRoot("/shared/proj/sub", { path: path.posix, home: "/home/me", fs: fakeFs(files, { real: { "/shared/.git": "/victim/dir" }, owners }) });
+  assert.equal(at({}), "/shared", "both are mine");
+  assert.equal(at({ "/victim/dir": other }), null, "the target is someone else's");
+  assert.equal(at({ "/shared/.git": other }), null, "the link is someone else's");
+  assert.equal(at({ "/shared/.git": other, "/victim/dir": other }), null, "both are someone else's");
 });
 
 test("win32: key lookup from a nested dir finds AGENTS.md and .sprintree.json", () => {
@@ -817,26 +895,14 @@ function rmSyncGit(dir) {
 // ---- the safe reader -------------------------------------------------------------------------
 
 const posix = { path: path.posix };
-const linux = process.platform === "linux";
-
-/** Runs `fn` as on another OS: process.platform is `name`. */
-function asPlatform(name, fn) {
-  const saved = Object.getOwnPropertyDescriptor(process, "platform");
-  Object.defineProperty(process, "platform", { value: name });
-  try {
-    return fn();
-  } finally {
-    Object.defineProperty(process, "platform", saved);
-  }
-}
 
 const cfgFiles = { "/repo/.git": null, "/repo/.sprintree.json": '{"project":"SPD"}' };
 
 test("the reader opens the real path with O_NOFOLLOW and O_NONBLOCK and refuses a descriptor that is another file than the path", () => {
   const files = { "/repo/.git": null, "/repo/AGENTS.md": "https://sprintree.com/p/ABC" };
-  const calls = [];
-  assert.equal(findDocKey("/repo", { ...posix, fs: fakeFs(files, { calls }) }).key, "ABC");
-  assert.ok(calls.length > 0 && calls.every((f) => (f & 0x100) && (f & 0x800)), `open flags: ${calls}`);
+  const opened = [];
+  assert.equal(findDocKey("/repo", { ...posix, fs: fakeFs(files, { opened }) }).key, "ABC");
+  assert.ok(opened.length > 0 && opened.every(([, flags]) => (flags & 0x100) && (flags & 0x800)), `open flags: ${opened}`);
   const warns = [];
   assert.equal(findDocKey("/repo", { ...posix, fs: fakeFs(files, { ino: { "/repo/AGENTS.md": 999 } }), warn: (l) => warns.push(l) }), null);
   assert.match(warns.join("\n"), /AGENTS\.md: changed while it was being opened/);
@@ -851,7 +917,7 @@ test("a path that leads outside the repo or to a non-regular file is refused bef
   assert.throws(() => resolveConfig("/repo", { ...posix, fs: dir }), /not a regular file/);
   assert.deepEqual(opened, [], "nothing was opened");
   assert.equal(resolveConfig("/repo", { ...posix, fs: fakeFs(cfgFiles, { opened }) }).project, "SPD");
-  assert.deepEqual(opened, ["/repo/.sprintree.json"]);
+  assert.deepEqual(opened, [["/repo/.sprintree.json", 0 | 0x100 | 0x800]]);
 });
 
 test("containment is by directory: the parent itself is outside, a sibling called ..odd is inside, a repo reached through a link is compared by its real path", () => {
@@ -911,14 +977,16 @@ test("the reader refuses an opened descriptor that is not a regular file (a FIFO
   assert.throws(() => resolveConfig("/repo", { ...posix, fs: fakeFs(cfgFiles, { notFileOnFstat: true }) }), /not a regular file/);
 });
 
-test("at most 1 MB is read, whatever size the file reports (a procfs file reports 0)", () => {
+test("at most 1 MB is read, in as many reads as the OS needs, whatever size the file reports (a procfs file reports 0)", () => {
   const json = (n) => '{"project":"SPD","pad":"' + "y".repeat(n - '{"project":"SPD","pad":""}'.length) + '"}';
   const files = (text) => ({ "/repo/.git": null, "/repo/.sprintree.json": text });
   const MB = 1024 * 1024;
-  assert.equal(resolveConfig("/repo", { ...posix, fs: fakeFs(files(json(MB))) }).project, "SPD", "exactly 1 MB is fine");
-  for (const size of [undefined, 0]) {
-    const fs = fakeFs(files(json(MB + 1)), { sizes: { "/repo/.sprintree.json": size } });
-    assert.throws(() => resolveConfig("/repo", { ...posix, fs }), /larger than 1 MB/, `reported size ${size}`);
+  for (const chunk of [Infinity, 64 * 1024]) {
+    assert.equal(resolveConfig("/repo", { ...posix, fs: fakeFs(files(json(MB)), { chunk }) }).project, "SPD", `exactly 1 MB is fine, ${chunk} bytes a read`);
+    for (const size of [undefined, 0]) {
+      const fs = fakeFs(files(json(MB + 1)), { sizes: { "/repo/.sprintree.json": size }, chunk });
+      assert.throws(() => resolveConfig("/repo", { ...posix, fs }), /larger than 1 MB/, `reported size ${size}, ${chunk} bytes a read`);
+    }
   }
 });
 
@@ -987,13 +1055,16 @@ test("doc files are decoded like .sprintree.json (UTF-8 BOM, UTF-16LE)", () => {
   assert.equal(resolveConfig(tmpRepo({ "AGENTS.md": utf16le(link) })).project, "ABC");
 });
 
-test("containment is checked against the repo root: a subdirectory symlinked outside is refused", { skip: win }, () => {
-  const outside = tmpRepo({ "x/.sprintree.json": '{"project":"EVIL"}' });
-  const root = tmpRepo();
-  symlinkSync(path.join(outside, "x"), path.join(root, "sub"));
-  assert.throws(() => resolveConfig(path.join(root, "sub")), /outside/);
-  const ok = tmpRepo({ "sub/.sprintree.json": '{"project":"OKAY"}' });
-  assert.equal(resolveConfig(path.join(ok, "sub")).project, "OKAY");
+test("a start directory reached through a link is searched where it really is, not where its path says", { skip: win }, () => {
+  const place = tmpRepo({ "x/.sprintree.json": '{"project":"REAL"}' });
+  const root = tmpRepo({ ".sprintree.json": '{"project":"LEXICAL"}' });
+  symlinkSync(path.join(place, "x"), path.join(root, "sub"));
+  assert.equal(resolveConfig(path.join(root, "sub")).project, "REAL");
+  // the real place has no repo around it: the config of the repo holding the link is not picked up
+  const bare = tmpDir();
+  mkdirSync(path.join(bare, "y"));
+  symlinkSync(path.join(bare, "y"), path.join(root, "sub2"));
+  assert.equal(resolveConfig(path.join(root, "sub2")).project, undefined);
 });
 
 test("@file: a JSON error never echoes the file, a directory, a device or an oversized file is refused (also on Windows)", { timeout: 20000 }, async () => {
@@ -1080,6 +1151,9 @@ test("invisible characters are stripped from server text, tool names and error m
   assert.equal(stripControls("a\uffa0b\u17b4c\u17b5d\u034fe\u{13430}f\u{13439}g\u{1343f}h\u{e0000}i\u{e0001}j"), "abcdefghij");
   // the line and paragraph separators and the braille blank become a space (the server refuses them in a name)
   assert.equal(stripControls("a\u2028b\u2029c\u2800d"), "a b c d");
+  for (const cp of INVISIBLE_ASCII_CARRIERS.map((c) => c.codePointAt(0))) assert.equal(stripControls(`a${String.fromCodePoint(cp)}b`), "ab", cp.toString(16));
+  // a hidden ASCII channel in the code points no list names: "Done" followed by a command written in U+E0080 + the character
+  assert.equal(stripControls("Done" + [..."rm -rf ~"].map((c) => String.fromCodePoint(0xe0080 + c.charCodeAt(0))).join("")), "Done");
   const e = harness((b) => (b.method === "tools/call" ? { status: 500, text: "bo\u202eom\u2060" } : null));
   await e.go(["call", "x", "{}"]);
   assert.ok(!RAW_BAD.test(e.errs.join("")));
@@ -1134,9 +1208,46 @@ test("variation selectors and tag characters: only a single selector after a bas
   for (const [name, [text, want]] of Object.entries(strip)) assert.equal(stripControls(text), want, name);
 });
 
+test("every format character and every default-ignorable code point is removed, whatever the Unicode version of this Node; only the kept ones and the selector ranges are not", () => {
+  const ignorable = /^[\p{Cf}\p{Default_Ignorable_Code_Point}]$/u;
+  const kept = (cp) => (cp >= 0x200c && cp <= 0x200f) || (cp >= 0xfe00 && cp <= 0xfe0f) || (cp >= 0xe0100 && cp <= 0xe01ef);
+  let checked = 0;
+  for (let cp = 0; cp <= 0x10ffff; cp++) {
+    if (cp >= 0xd800 && cp <= 0xdfff) continue;
+    const ch = String.fromCodePoint(cp);
+    if (!ignorable.test(ch) || kept(cp)) continue;
+    checked++;
+    if (stripControls(`a${ch}b`) !== "ab") assert.fail(`U+${cp.toString(16)} is not removed`);
+  }
+  assert.ok(checked > 3500, `only ${checked} code points checked`);
+  // not default-ignorable on every Node, but a channel all the same: the Mongolian selectors, the hieroglyph format controls
+  for (const cp of [0x180b, 0x180c, 0x180d, 0x180f, 0x13430, 0x13439, 0x1343f]) assert.equal(stripControls(`a${String.fromCodePoint(cp)}b`), "ab", cp.toString(16));
+});
+
+test("a lone surrogate becomes U+FFFD before anything is removed, so stripping a format character cannot join two halves into a tag character", () => {
+  const tag = (c) => String.fromCodePoint(0xe0000 + c.charCodeAt(0));
+  const halves = (c) => [tag(c).charAt(0), tag(c).charAt(1)];
+  const hiding = [..."rm -rf ~"].map((c) => halves(c).join("\u200b")).join("");
+  assert.equal(stripControls("safe" + hiding), "safe" + "\ufffd".repeat(16));
+  assert.equal(stripControls(`a${halves("r")[0]}\u0001${halves("r")[1]}b`), "a\ufffd\ufffdb", "a control between the halves");
+  assert.equal(stripControls(`a${halves("r")[0]}\u001b[0m${halves("r")[1]}b`), "a\ufffd\ufffdb", "an escape sequence between the halves");
+  assert.equal(stripControls(`${halves("r")[0]}\u{db40}`), "\ufffd\ufffd", "two high halves");
+  assert.equal(stripControls("\udc72\udb40"), "\ufffd\ufffd", "low before high");
+  assert.equal(stripControls("A\udb40\u200b\udd00"), "A\ufffd\ufffd", "a selector half pair after a letter");
+  assert.equal(stripControls("a\u{1f600}b"), "a\u{1f600}b", "a whole pair is not touched");
+  assert.equal(stripControls(tag("r")), "", "a whole tag character is removed as before");
+});
+
+test("a variation selector needs a visible base: not a mark, a control, a space, an unassigned or a private-use code point", () => {
+  const vs = "\ufe0f";
+  const strip = ["e\u0301", "\n", "\t", "\u2800", "\u2028", " ", "\u00a0", "\u0378", "\ue000", "\u{f0000}", "\u200b", "\u{e0100}"];
+  for (const base of strip) assert.equal(stripControls(base + vs), stripControls(base), `after U+${base.codePointAt(0).toString(16)}`);
+  for (const base of ["a", "\u2764", "\u{1f600}", "1", "\ufffd"]) assert.equal(stripControls(base + vs), base + vs, `after U+${base.codePointAt(0).toString(16)}`);
+});
+
 test("a refusal is exit 1 even when the server hides the Error: prefix behind control sequences or invisible characters, the kept ones included", async () => {
   const tag = String.fromCodePoint(0xe0020);
-  const hidden = ["\u001b[0m", "\u001b]\u0007", "\u200b", "\u009b", "\u2060", tag, "\ufeff", "\u00ad", "\u200c", "\u200d", "\u200e", "\u200f", "\ufe0f", "\u{e0100}", "\u2800", "\u3164"];
+  const hidden = ["\u001b[0m", "\u001b]\u0007", "\u200b", "\u009b", "\u2060", tag, "\ufeff", "\u00ad", "\u200c", "\u200d", "\u200e", "\u200f", "\ufe0f", "\u{e0100}", "\u2800", "\u3164", ...INVISIBLE_ASCII_CARRIERS];
   for (const text of [...hidden.map((h) => `${h}Error: nope`), "E\u200drror: nope", "Error\u200e: nope", "\u200d\u200c Error: nope"]) {
     const h = harness(callResult({ content: [{ text }] }));
     assert.equal(await h.go(["call", "x", "{}"]), 1, JSON.stringify(text));
@@ -1159,7 +1270,7 @@ test("token shapes (TOKEN_CASES, also run against the gitleaks rule): redacted w
 
 test("a token with an invisible character, a kept one included, or an escape sequence inside is redacted too (cleaning comes first)", async () => {
   const body = "e".repeat(24);
-  const inside = ["\u200b", "\u200c", "\u200d", "\u200e", "\u200f", "\ufe0f", "\u2060", String.fromCodePoint(0xe0041), "\u001b[0m"];
+  const inside = ["\u200b", "\u200c", "\u200d", "\u200e", "\u200f", "\ufe0f", "\u2060", String.fromCodePoint(0xe0041), "\u001b[0m", ...INVISIBLE_ASCII_CARRIERS];
   for (const mark of inside) {
     const h = harness(callResult({ content: [{ text: `itn_${"e".repeat(10)}${mark}${"e".repeat(14)}` }] }));
     await h.go(["call", "x", "{}"]);
@@ -1186,6 +1297,33 @@ test("the configured token is redacted in plain, encoded and invisible-character
   }
 });
 
+test("the configured token is hidden whatever it looks like: with an escape or regex characters of its own, with a character outside the BMP, at its shortest; shorter than that it is not a secret", async () => {
+  const BODY = "Ab1-_".repeat(6);
+  const echo = async (own, text) => {
+    const h = harness(callResult({ content: [{ text }] }), { env: { SPRINTREE_TOKEN: own } });
+    await h.go(["call", "x", "{}"]);
+    return h.lines[0];
+  };
+  for (const own of ["s3cr%41t-value-1234", "%41abc", "s3cr\\u0041t-value-1234", "a.b+c(d)[e]*f$g^h|i?j-1234", "tok\u{1f600}en-secret-9", "abcdef"]) {
+    assert.equal(await echo(own, `x ${own} y`), "x [token] y", `plain: ${own}`);
+    assert.equal(await echo(own, `a\u200c ${own}\u200d y`), "a\u200c [token]\u200d y", `beside kept characters: ${own}`);
+    if (!/[%\\]/.test(own)) assert.equal(await echo(own, `a\u200c ${own.slice(0, 3)}\u200d${own.slice(3)} y`), "a\u200c [token] y", `split by a kept character: ${own}`);
+  }
+  // the form it has once its own escapes are read, and its regex characters stay plain characters
+  assert.equal(await echo("sp+t.(x)1234", "x sp%2Bt.(x)1234 y"), "x [token] y");
+  assert.equal(await echo("sp+t.(x)1234", "x sppppt.(x)1234 y spxt.(x)1234 y"), "x sppppt.(x)1234 y spxt.(x)1234 y");
+  assert.equal(await echo("abcde", "x abcde y"), "x abcde y", "five characters are no secret");
+  assert.equal(await echo("abcdef", `x abcdef itn_${BODY} y`), "x [token] [token] y");
+});
+
+test("a long text with a kept character and an escape is redacted at the right place (offsets beyond 16 bits)", async () => {
+  const BODY = "Ab1-_".repeat(6);
+  const pad = "ab ".repeat(100000);
+  const h = harness(callResult({ content: [{ text: `${pad}\u200d${pad}%69tn_${BODY} ${pad}x` }] }));
+  await h.go(["call", "x", "{}"]);
+  assert.equal(h.lines[0], `${pad}\u200d${pad}[token] ${pad}x`);
+});
+
 // ---- endpoint --------------------------------------------------------------------------------
 
 test("a host other than sprintree.com is named on stderr once, before the token goes there (the URL parser lower-cases the host, so SPRINTREE.COM is sprintree.com)", async () => {
@@ -1203,7 +1341,7 @@ test("a host other than sprintree.com is named on stderr once, before the token 
 });
 
 test("a bad SPRINTREE_MCP_URL is never echoed with its user:password@ or its query: an unparsable one is not shown at all, a wrong scheme as scheme://host/path", async () => {
-  const bad = ["https//user:hunter2@host.example/mcp", "https://user:hunter2@exa mple.test/mcp", "https://exa mple.test/mcp?key=hunter2", "hunter2@exa mple.test"];
+  const bad = ["https//user:hunter2@host.example/mcp", "https://user:hunter2@exa mple.test/mcp", "https://exa mple.test/mcp?key=hunter2", "hunter2@exa mple.test", "bob:hunter2@sprintree.com/mcp", "localhost:8080/mcp?key=hunter2", "mailto:bob:hunter2@x"];
   const wrongScheme = ["http://user:hunter2@evil.example/mcp?key=hunter2", "ftp://user:hunter2@evil.example/mcp#hunter2"];
   for (const raw of [...bad, ...wrongScheme]) {
     const h = harness(() => null, { env: { SPRINTREE_TOKEN: TOKEN, SPRINTREE_MCP_URL: raw } });

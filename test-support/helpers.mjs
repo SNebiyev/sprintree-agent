@@ -1,5 +1,5 @@
 // Shared test helpers. Lives outside test/ on purpose: `node --test` runs every file inside a test directory, and this one defines no tests.
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,10 +8,10 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 
 const made = [];
 
-/** A new temp directory, removed again when the test process exits (MIN_NODE has no `node:test` `after`). */
+/** A new temp directory (its real path: /tmp may be a link, a Windows temp path may be an 8.3 name), removed again when the test process exits (MIN_NODE has no `node:test` `after`). */
 export function tmpDir(prefix = "sa-") {
   if (!made.length) process.on("exit", () => made.forEach((d) => rmSync(d, { recursive: true, force: true })));
-  const d = mkdtempSync(path.join(tmpdir(), prefix));
+  const d = realpathSync.native(mkdtempSync(path.join(tmpdir(), prefix)));
   made.push(d);
   return d;
 }
@@ -69,6 +69,8 @@ export const TOKEN_CASES = [
   ["percent-encoded underscore", `itn%5F${BODY}`, `itn_${BODY}`, "[token]"],
   ["percent-encoded, lower-case hex", `itn%5f${BODY}`, `itn_${BODY}`, "[token]"],
   ["encoded twice", `itn%255F${BODY}`, `itn_${BODY}`, "[token]"],
+  ["encoded 5 times (the decoding depth)", `itn%252525255F${BODY}`, `itn_${BODY}`, "[token]"],
+  ["encoded 6 times is one level too deep", `itn%25252525255F${BODY}`, null, `itn%25252525255F${BODY}`],
   ["\\u escape", `itna\\u005f${BODY}`, `itna_${BODY}`, "[token]"],
   ["\\\\u escape (escaped backslash)", `itna\\\\u005f${BODY}`, `itna_${BODY}`, "[token]"],
   ["\\U escape, upper-case hex", `itna\\U005F${BODY}`, `itna_${BODY}`, "[token]"],

@@ -38,7 +38,7 @@
  * A refusal (HTTP error, JSON-RPC error, isError, or a text answer starting with "Error:")
  * exits 1, so a failed write is never read as success.
  */
-import { existsSync, statSync, realpathSync, readlinkSync, readSync, openSync, fstatSync, closeSync, constants as FS_CONSTANTS } from "node:fs";
+import { existsSync, statSync, lstatSync, realpathSync, readlinkSync, readSync, openSync, fstatSync, closeSync, constants as FS_CONSTANTS } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -54,7 +54,7 @@ const DEFAULT_TIMEOUT_MS = 30000;
 const MAX_TIMEOUT_MS = 600000;
 const PROTOCOL_VERSION = "2025-06-18";
 // realpathSync.native: on Windows it also expands 8.3 short names, so two spellings of one directory compare equal.
-const REAL_FS = { existsSync, statSync, realpathSync: realpathSync.native, readlinkSync, readSync, openSync, fstatSync, closeSync, constants: FS_CONSTANTS };
+const REAL_FS = { existsSync, statSync, lstatSync, realpathSync: realpathSync.native, readlinkSync, readSync, openSync, fstatSync, closeSync, constants: FS_CONSTANTS };
 const MAX_TEXT_BYTES = 1024 * 1024; // config and doc files are small; anything bigger is not one
 // The server's project key rule. Doc links and `.sprintree.json` are both checked against it.
 const KEY_CHARS = "[A-Za-z][A-Za-z0-9]{0,9}";
@@ -63,7 +63,7 @@ const PROJECT_RE = new RegExp(`^${KEY_CHARS}$`);
 const PLACEHOLDER_KEY = "KEY"; // the template link is https://sprintree.com/p/KEY
 export const KNOWN_CONFIG_KEYS = ["project", "language", "typography", "statuses", "section_titles"];
 const DOC_FILES = ["AGENTS.md", "CLAUDE.md", "GEMINI.md", path.join(".claude", "CLAUDE.md")];
-const DOC_NAMES = DOC_FILES.map((f) => f.split(path.sep).join("/"));
+export const DOC_NAMES = DOC_FILES.map((f) => f.split(path.sep).join("/"));
 const PAT_HINT = "tokens start with itn_; create one under Settings -> API & MCP -> Personal access tokens";
 
 /** Decode a text file: strips a UTF-8 BOM, reads UTF-16LE (FF FE), refuses UTF-16BE (FE FF). */
@@ -79,39 +79,51 @@ const leaves = (p, rel) => rel === ".." || rel.startsWith(".." + p.sep) || p.isA
 /** The uid of this process, or null where there is none (Windows). */
 const currentUid = () => (typeof process.getuid === "function" ? process.getuid() : null);
 
+/** The real path of `x` (links followed, on Windows 8.3 names expanded); a part that does not exist is kept as it is. */
+function realOr(fs, x, p) {
+  try {
+    return fs.realpathSync(x);
+  } catch {
+    const up = p.dirname(x);
+    return up === x ? x : p.join(realOr(fs, up, p), p.basename(x));
+  }
+}
+
 /**
- * The directory holding .git at or above `dir` (the repo root), or null. Inside $HOME the search goes up to $HOME
- * (the home directory itself is looked at). Outside $HOME a .git counts only when the current user owns it (POSIX),
- * so a .git planted in /tmp or a shared folder is no repo root; where there is no uid (Windows) only `dir` itself is
- * looked at there. Paths are compared as real paths (on Windows without regard to case).
+ * The directory holding .git at or above `dir` (the repo root), or null. The walk climbs the REAL path of `dir` (links
+ * followed), so a start directory reached through a link or junction never climbs out of where it really is. Inside $HOME
+ * it goes up to $HOME (the home directory itself is looked at). Outside $HOME a .git counts only when the current user
+ * owns it (POSIX): a symlinked .git only when the link and its target are both owned by the current user, so a .git
+ * planted in /tmp or a shared folder is no repo root; where there is no uid (Windows) only `dir` itself is looked at there.
+ * With no usable $HOME (unset, empty, relative, or a filesystem root such as `/`) nothing is inside it: ownership is
+ * always required. Paths are compared as real paths (on Windows without regard to case).
  */
 export function repoRoot(dir, { path: p = path, fs = REAL_FS, home = homedir() } = {}) {
-  const real = (x) => {
-    try {
-      return fs.realpathSync(x);
-    } catch {
-      return x;
-    }
-  };
-  const start = p.resolve(dir);
-  const homeReal = home ? real(p.resolve(home)) : null;
-  const inHome = homeReal !== null && !leaves(p, p.relative(homeReal, real(start)));
+  const same = (a, b) => p.relative(a, b) === "";
+  const start = realOr(fs, p.resolve(dir), p);
+  const homeReal = home && p.isAbsolute(home) ? realOr(fs, p.resolve(home), p) : null;
+  const inHome = homeReal !== null && p.dirname(homeReal) !== homeReal && !leaves(p, p.relative(homeReal, start));
   const uid = currentUid();
+  const owned = (git) => {
+    const link = fs.lstatSync(git);
+    return link.uid === uid && (!link.isSymbolicLink() || fs.statSync(git).uid === uid);
+  };
   for (let cur = start; ; ) {
     const git = p.join(cur, ".git");
-    if (fs.existsSync(git) && (inHome || uid === null || fs.statSync(git).uid === uid)) return cur;
+    if (fs.existsSync(git) && (inHome || uid === null || owned(git))) return cur;
     const up = p.dirname(cur);
-    if (up === cur || (inHome ? p.relative(real(cur), homeReal) === "" : uid === null)) return null;
+    if (up === cur || (inHome ? same(cur, homeReal) : uid === null)) return null;
     cur = up;
   }
 }
 
 /**
- * `dir` and its parents up to `root` (the repo root, or null). Without a repo root only `dir` itself is yielded:
- * a config in some parent directory (another user's /tmp, a shared folder) is never picked up.
+ * The real path of `dir` and its parents up to `root` (the repo root, or null). Without a repo root only `dir` itself is
+ * yielded: a config in some parent directory (another user's /tmp, a shared folder) is never picked up. Walks the same
+ * real path as `repoRoot`, so it always meets `root`.
  */
-export function* ancestors(dir, root, p = path) {
-  let cur = p.resolve(dir);
+export function* ancestors(dir, root, p = path, fs = REAL_FS) {
+  let cur = realOr(fs, p.resolve(dir), p);
   yield cur;
   while (root !== null && cur !== root) {
     const up = p.dirname(cur);
@@ -157,17 +169,13 @@ function checkProjectKey(key, where) {
  * resolving the path again) and must be the same file (dev and ino), so a parent directory swapped for a link between
  * the check and the open is caught (best effort where the OS cannot name an open file's path). At most 1 MB is read:
  * a longer file is refused, whatever size it reports (a procfs file reports 0).
- * With `contain` (a directory: config and doc files) both places must lie inside it and, on POSIX, the file must belong
+ * With `contain` (a real path, as the repo walk yields it: config and doc files) both places must lie inside it and, on POSIX, the file must belong
  * to the current user; `noHardLink` refuses a file with several hard links. Without `contain` (the explicit `@file`
  * argument) any regular file is fine.
  */
 function readTextFile(f, fs, { contain = null, noHardLink = false, path: p = path } = {}) {
-  let box; // the real path of `contain`, resolved on first use: a missing directory must stay an error of the file lookup
   const inside = (real) => {
-    if (contain) {
-      box ??= fs.realpathSync(contain);
-      if (leaves(p, p.relative(box, real))) throw new Error(`${f}: resolves outside the repo it was found in`);
-    }
+    if (contain && leaves(p, p.relative(contain, real))) throw new Error(`${f}: resolves outside the repo it was found in`);
     return real;
   };
   let real;
@@ -232,7 +240,7 @@ export function findDocKey(dir, opts = {}) {
   const fs = opts.fs ?? REAL_FS;
   const root = "root" in opts ? opts.root : repoRoot(dir, opts);
   let placeholderIn = null;
-  for (const d of ancestors(dir, root, p)) {
+  for (const d of ancestors(dir, root, p, fs)) {
     for (const name of DOC_FILES) {
       const f = p.join(d, name);
       let text;
@@ -268,7 +276,7 @@ export function resolveConfig(dir, opts = {}) {
   const root = repoRoot(dir, opts);
   const config = {};
   let source = null;
-  for (const d of ancestors(dir, root, p)) {
+  for (const d of ancestors(dir, root, p, fs)) {
     const f = p.join(d, ".sprintree.json");
     const parsed = readConfigFile(f, root, d, fs, p);
     if (!parsed) continue;
@@ -303,13 +311,16 @@ export function resolveConfig(dir, opts = {}) {
 
 /** Refuse a plain-http endpoint unless it is local, so the token never crosses the network in clear. */
 export function checkMcpUrl(raw) {
+  // Not shown at all: the text may hold a password (user:password@host or a key in the query).
+  const invalid = () => new Error("SPRINTREE_MCP_URL is not a valid URL: [invalid URL] (the value is not echoed, it may hold a password)");
   let u;
   try {
     u = new URL(raw);
   } catch {
-    // Not shown at all: the text may hold a password (user:password@host or a key in the query).
-    throw new Error("SPRINTREE_MCP_URL is not a valid URL: [invalid URL] (the value is not echoed, it may hold a password)");
+    throw invalid();
   }
+  // `bob:hunter2@sprintree.com/mcp` has no authority: it parses as the scheme `bob:` with the password in the path
+  if (u.host === "") throw invalid();
   const host = u.hostname.replace(/^\[|\]$/g, "");
   const local = host === "localhost" || host === "127.0.0.1" || host === "::1";
   if (u.protocol === "https:" || (u.protocol === "http:" && local)) return u.href;
@@ -373,34 +384,38 @@ function authHeader(env) {
 // of a string sequence stays visible as plain text: an unterminated OSC/DCS/APC/PM/SOS must never swallow the text
 // after it. Every other C0/C1 control except \n and \t goes too, and so do the characters that make text read
 // differently from what it is (HIDDEN): format characters (Cf: bidi controls, zero-width space, word joiner, BOM,
-// soft hyphen), tag characters, variation selectors, and the fillers that print as nothing (Hangul, Khmer, U+034F,
-// Egyptian hieroglyph format controls). U+2028, U+2029 and U+2800 become a space. What real text needs stays:
+// soft hyphen), every Default_Ignorable_Code_Point (also the unassigned ones in that set: U+2065, U+FFF0-FFF8, most of
+// the U+E0000-E0FFF block), tag characters, variation selectors (Mongolian ones too), and the fillers that print as
+// nothing (Hangul, Khmer, U+034F, Egyptian hieroglyph format controls). U+2028, U+2029 and U+2800 become a space, and a
+// lone surrogate becomes U+FFFD first (stripping a format character between a high and a low surrogate would join them
+// into a tag character). Default_Ignorable_Code_Point covers the Mongolian selectors U+180B-180F; the hieroglyph
+// format controls U+13430-1343F are listed because Unicode 14 (Node 18.7.0) does not class them as Cf. What real text needs stays:
 //   - ZWJ U+200D (emoji sequences), ZWNJ U+200C (Persian), LRM U+200E, RLM U+200F;
 //   - ONE variation selector VS1-16 (U+FE00-FE0F) directly after a visible base character (an emoji presentation
 //     selector), and one VS17-256 (U+E0100-E01EF) directly after a CJK ideograph; a run, a leading one or one after
 //     another format character is removed;
 //   - the tag characters of the three subdivision flags (England, Scotland, Wales): U+1F3F4, a tag code, U+E007F.
 // Every other tag character is removed: a fake flag can spell a command with them.
-const HIDDEN = String.raw`\p{Cf}\u{e0000}-\u{e007f}\ufe00-\ufe0f\u{e0100}-\u{e01ef}\u034f\u115f\u1160\u17b4\u17b5\u3164\uffa0\u{13430}-\u{1343f}`;
 const VS = String.raw`\ufe00-\ufe0f\u{e0100}-\u{e01ef}`;
-const CJK = String.raw`\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u{20000}-\u{2a6df}\u{2a700}-\u{2b81f}\u{2b820}-\u{2ceaf}\u{2ceb0}-\u{2ebef}\u{2f800}-\u{2fa1f}\u{30000}-\u{323af}`;
-const FLAG = String.raw`\u{1f3f4}\u{e0067}\u{e0062}(?:\u{e0065}\u{e006e}\u{e0067}|\u{e0073}\u{e0063}\u{e0074}|\u{e0077}\u{e006c}\u{e0073})\u{e007f}`;
-const BASE = String.raw`[^\p{Z}\p{Cc}\p{M}\u2800${HIDDEN}]`;
+const HIDDEN = String.raw`\p{Cf}\p{Default_Ignorable_Code_Point}\u{13430}-\u{1343f}`;
+const CJK = String.raw`\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u{20000}-\u{2a6df}\u{2a700}-\u{2ebef}\u{2f800}-\u{2fa1f}\u{30000}-\u{323af}`;
+// England, Scotland, Wales: a black flag, the tag letters of the region code, a cancel tag
+const FLAG = `\\u{1f3f4}(?:${"gbeng|gbsct|gbwls".replace(/[a-z]/g, (c) => String.fromCodePoint(0xe0000 + c.charCodeAt(0)))})\\u{e007f}`;
+// A variation selector needs a visible base: not a space, a control, a mark, a format character, or a code point with no character
+const BASE = String.raw`[^\p{Z}\p{Cc}\p{Cn}\p{Cs}\p{Co}\p{M}${HIDDEN}]`;
 const ESC_SEQ_RE = /\u001b(?:\[[0-?]*[ -/]*[@-~]?|[ -/]*[0-~]?)/g;
 const CONTROL_RE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g;
-const INVISIBLE_RE = new RegExp(
-  `(${FLAG}|[\\u200c-\\u200f]|(?<=${BASE})[\\ufe00-\\ufe0f](?![${VS}])|(?<=[${CJK}])[\\u{e0100}-\\u{e01ef}](?![${VS}]))|[\\u2028\\u2029\\u2800]|[${HIDDEN}]`,
-  "gu"
-);
+const INVISIBLE_RE = new RegExp(`(${FLAG}|[\\u200c-\\u200f]|(?<=${BASE})[\\ufe00-\\ufe0f](?![${VS}])|(?<=[${CJK}])[\\u{e0100}-\\u{e01ef}](?![${VS}]))|[${HIDDEN}]`, "gu");
 const HIDDEN_RE = new RegExp(`[${HIDDEN}]`, "gu");
-const HIDDEN_ONE_RE = new RegExp(`^[${HIDDEN}]$`, "u");
 
 /** Text made safe to print on a terminal: control sequences and invisible characters removed (ESC sequences first, so one cannot be split). */
 export function stripControls(text) {
   return String(text)
+    .replace(/[\ud800-\udfff]/gu, "\ufffd")
     .replace(ESC_SEQ_RE, "")
     .replace(CONTROL_RE, "")
-    .replace(INVISIBLE_RE, (m, kept) => kept ?? (m === "\u2028" || m === "\u2029" || m === "\u2800" ? " " : ""));
+    .replace(/[\u2028\u2029\u2800]/g, " ")
+    .replace(INVISIBLE_RE, "$1");
 }
 
 /** `text` as it reads to a person: with every character of HIDDEN left out, the kept ones (ZWJ, a variation selector, ...) too. */
@@ -410,48 +425,59 @@ const readable = (text) => text.replace(HIDDEN_RE, "");
 // variation selector, flag tags), percent-encoded (`Bearer%20itn%5F...`) or written as a `\u005f` escape. gitleaks
 // decodes the last two (recursively, up to 5 levels), so redaction looks at a view of the text: HIDDEN characters left
 // out, ASCII escapes decoded. Every match is mapped back to the text it came from and replaced there.
+// What differs from gitleaks, on purpose (decision of 2026-10-11): it also decodes base64 and hex segments, this does
+// not. Percent and `\u` escapes are decoded (depth 5, like gitleaks); base64 and hex are not, and the configured
+// SPRINTREE_TOKEN is always hidden, encoded or not.
 const ESCAPE_RE = /%([0-7][0-9a-fA-F])|\\{1,2}[uU]00([0-7][0-9a-fA-F])/g;
 const MAX_DECODE_DEPTH = 5;
+// One-way gate: the plain text goes straight to the token regex when no HIDDEN character and no escape is in it
+const NEEDS_VIEW_RE = new RegExp(`[${HIDDEN}]|${ESCAPE_RE.source}`, "u");
 
 /** The configured token and anything shaped like a Sprintree token (itn_, itna_, itnr_) replaced by [token]. */
 function redact(text, env) {
   text = String(text);
   const mine = (env.SPRINTREE_TOKEN || "").trim().replace(/^Bearer\s+/i, "");
   const re = mine.length >= 6 ? new RegExp(`${mine.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}|${TOKEN_SRC}`, "g") : TOKEN_RE_ALL;
-  let view = ""; // from[i] and to[i]: the part of `text` that view character i stands for
-  let from = [];
-  let to = [];
-  for (const m of text.matchAll(/[^]/gu)) {
-    if (HIDDEN_ONE_RE.test(m[0])) continue;
-    for (let i = 0; i < m[0].length; i++) (from.push(m.index), to.push(m.index + m[0].length));
-    view += m[0];
-  }
-  for (let depth = 0; depth < MAX_DECODE_DEPTH; depth++) {
-    const escapes = [...view.matchAll(ESCAPE_RE)];
-    if (!escapes.length) break;
-    let next = "";
-    const f2 = [];
-    const t2 = [];
-    let at = 0;
-    const copyTo = (end) => {
-      next += view.slice(at, end);
-      for (let i = at; i < end; i++) (f2.push(from[i]), t2.push(to[i]));
+  // the configured token as it stands in the text, even when it holds a `%XX` or `\u00XX` of its own (the decoded view would turn it into something else)
+  if (mine.length >= 6) text = text.split(mine).join("[token]");
+  if (!NEEDS_VIEW_RE.test(text)) return text.replace(re, "[token]");
+  // spans[2i], spans[2i+1]: the part of `text` that character i of `view` stands for (one allocation; a decoding pass shrinks it in place)
+  const spans = new Int32Array(2 * text.length);
+  let len = 0;
+  let at = 0;
+  const keep = (end) => {
+    for (let i = at; i < end; i++, len++) (spans[2 * len] = i, spans[2 * len + 1] = i + 1);
+  };
+  let view = text.replace(HIDDEN_RE, (m, i) => {
+    keep(i);
+    at = i + m.length;
+    return "";
+  });
+  keep(text.length);
+  for (let depth = 0; depth < MAX_DECODE_DEPTH && view.search(ESCAPE_RE) >= 0; depth++) {
+    const old = view.length;
+    let from = 0; // next unread view character
+    let to = 0; // next free span
+    const copy = (end) => {
+      spans.copyWithin(2 * to, 2 * from, 2 * end);
+      to += end - from;
+      from = end;
     };
-    for (const m of escapes) {
-      copyTo(m.index);
-      next += String.fromCharCode(parseInt(m[1] ?? m[2], 16));
-      f2.push(from[m.index]);
-      t2.push(to[m.index + m[0].length - 1]);
-      at = m.index + m[0].length;
-    }
-    copyTo(view.length);
-    [view, from, to] = [next, f2, t2];
+    view = view.replace(ESCAPE_RE, (m, a, b, i) => {
+      copy(i);
+      spans[2 * to] = spans[2 * i];
+      spans[2 * to + 1] = spans[2 * (i + m.length - 1) + 1];
+      to++;
+      from = i + m.length;
+      return String.fromCharCode(parseInt(a ?? b, 16));
+    });
+    copy(old);
   }
   let out = "";
-  let at = 0;
+  at = 0;
   for (const m of view.matchAll(re)) {
-    out += text.slice(at, from[m.index]) + "[token]";
-    at = to[m.index + m[0].length - 1];
+    out += text.slice(at, spans[2 * m.index]) + "[token]";
+    at = spans[2 * (m.index + m[0].length - 1) + 1];
   }
   return out + text.slice(at);
 }
