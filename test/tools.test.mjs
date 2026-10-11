@@ -73,6 +73,7 @@ const CASES = [
   ["a json fence with config keys only is a config example", '```json\n{ "project": "KEY", "x": { "done": "shipped" } }\n```'.replace('"x"', '"statuses"'), 0],
   ["a json fence with tool arguments is checked against the tool before it", 'Run `st.mjs call search_issues @args.json` with args.json:\n```json\n{"project":"K","catgory":"todo"}\n```', 1, /search_issues has no argument "catgory"/],
   ["a multi-line json fence with tool arguments", '```json\n{\n  "project": "K",\n  "catgory": "todo"\n}\n```', 1, /catgory/],
+  ["a ~~~json config example is a fence too", '~~~json\n{"project":"KEY","statuses":{"done":"shipped"}}\n~~~', 0],
   ["a ~~~json fence is a fence too", '~~~json\n{"project":"K","catgory":"todo"}\n~~~', 1, /catgory/],
   ["an unclosed json fence is an error", '```json\n{"project":"K"}\n\nLater: call search_issues \'{"catgory":"todo"}\'', 1, /never closed/],
   ["a json fence that does not parse", '```json\n{"project":\n```', 1, /does not parse/],
