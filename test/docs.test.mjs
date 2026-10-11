@@ -39,7 +39,7 @@ test("the guards fire on a violating line and stay quiet on a clean one", () => 
 });
 
 test("no doc offers a shell pipe, a stdin form, a heredoc or a here-string for text the agent did not write", () => {
-  for (const f of [SKILL, AGENTS, README, "GEMINI.md", "CONTRIBUTING.md", ST]) {
+  for (const f of [...DOCS, "CONTRIBUTING.md", ST]) {
     const text = read(f);
     assert.ok(!/\|\s*node\b[^\n]*st\.mjs/.test(text), `${f}: pipes into st.mjs`);
     assert.ok(!/(^|\n)\s*(echo|printf|cat)\b[^\n]*st\.mjs/.test(text), `${f}: echo/printf/cat example`);

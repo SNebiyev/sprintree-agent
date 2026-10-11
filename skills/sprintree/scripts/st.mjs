@@ -24,8 +24,8 @@
  * reader, `readTextFile`. `config` prints only project, language, typography, statuses and section_titles (other
  * keys are named on stderr as ignored, their values are never printed); a key that looks like a token only warns,
  * it does not make the file safe to commit secrets in. Everything printed (server text, config, warnings, errors)
- * is stripped of terminal control sequences and invisible characters first (`stripControls`: ZWJ, ZWNJ, LRM, RLM,
- * a variation selector after a base character and the three subdivision flags stay, they are part of real text),
+ * is stripped of terminal control sequences and invisible characters first (`stripControls`; what real text needs stays: one
+ * ZWJ, ZWNJ, LRM or RLM between two visible characters, a variation selector after a base character, the three subdivision flags),
  * and Sprintree tokens (itn_, itna_, itnr_, also percent-encoded or \u-escaped) are replaced by [token].
  *
  * OAuth: this fallback client is PAT-only on purpose. When an agent connects the Sprintree MCP
@@ -93,14 +93,20 @@ function realOr(fs, x, p) {
  * The directory holding .git at or above `dir` (the repo root), or null. The walk climbs the REAL path of `dir` (links
  * followed), so a start directory reached through a link or junction never climbs out of where it really is. Inside $HOME
  * it goes up to $HOME (the home directory itself is looked at). Outside $HOME a .git counts only when the current user
- * owns it (POSIX): a symlinked .git only when the link and its target are both owned by the current user, so a .git
- * planted in /tmp or a shared folder is no repo root; where there is no uid (Windows) only `dir` itself is looked at there.
- * With no usable $HOME (unset, empty, relative, or a filesystem root such as `/`) nothing is inside it: ownership is
- * always required. Paths are compared as real paths (on Windows without regard to case).
+ * owns it (POSIX): a .git that is a symlink only when the link and its target are both owned by the current user (the
+ * ends of the chain; a link in between is not followed one by one: the config and doc files are read with their own
+ * ownership and containment checks), so a .git planted in /tmp or a shared folder is no repo root; where there is no uid
+ * (Windows) only `dir` itself is looked at there. With no usable $HOME (empty, relative, or a filesystem root such as `/`)
+ * nothing is inside it: ownership is always required. An UNSET HOME is not "no home": `os.homedir()` then falls back to the
+ * passwd entry. Paths are compared as real paths (on Windows without regard to case).
  */
-export function repoRoot(dir, { path: p = path, fs = REAL_FS, home = homedir() } = {}) {
+export function repoRoot(dir, opts = {}) {
+  return climb(realOr(opts.fs ?? REAL_FS, (opts.path ?? path).resolve(dir), opts.path ?? path), opts);
+}
+
+/** `repoRoot` for a start that already is a real path. */
+function climb(start, { path: p = path, fs = REAL_FS, home = homedir() } = {}) {
   const same = (a, b) => p.relative(a, b) === "";
-  const start = realOr(fs, p.resolve(dir), p);
   const homeReal = home && p.isAbsolute(home) ? realOr(fs, p.resolve(home), p) : null;
   const inHome = homeReal !== null && p.dirname(homeReal) !== homeReal && !leaves(p, p.relative(homeReal, start));
   const uid = currentUid();
@@ -118,12 +124,12 @@ export function repoRoot(dir, { path: p = path, fs = REAL_FS, home = homedir() }
 }
 
 /**
- * The real path of `dir` and its parents up to `root` (the repo root, or null). Without a repo root only `dir` itself is
- * yielded: a config in some parent directory (another user's /tmp, a shared folder) is never picked up. Walks the same
- * real path as `repoRoot`, so it always meets `root`.
+ * `dir` (a real path, as `climb` and `resolveConfig` have it) and its parents up to `root` (what `repoRoot` returned for it:
+ * a real path, or null). Without a repo root only `dir` itself is yielded: a config in some parent directory (another user's
+ * /tmp, a shared folder) is never picked up.
  */
-export function* ancestors(dir, root, p = path, fs = REAL_FS) {
-  let cur = realOr(fs, p.resolve(dir), p);
+export function* ancestors(dir, root, p = path) {
+  let cur = dir;
   yield cur;
   while (root !== null && cur !== root) {
     const up = p.dirname(cur);
@@ -169,9 +175,9 @@ function checkProjectKey(key, where) {
  * resolving the path again) and must be the same file (dev and ino), so a parent directory swapped for a link between
  * the check and the open is caught (best effort where the OS cannot name an open file's path). At most 1 MB is read:
  * a longer file is refused, whatever size it reports (a procfs file reports 0).
- * With `contain` (a real path, as the repo walk yields it: config and doc files) both places must lie inside it and, on POSIX, the file must belong
- * to the current user; `noHardLink` refuses a file with several hard links. Without `contain` (the explicit `@file`
- * argument) any regular file is fine.
+ * With `contain` (a real path, as the repo walk yields it: config and doc files) both places must lie inside it and, on
+ * POSIX, the file must belong to the current user; `noHardLink` refuses a file with several hard links. Without `contain`
+ * (the explicit `@file` argument) any regular file is fine.
  */
 function readTextFile(f, fs, { contain = null, noHardLink = false, path: p = path } = {}) {
   const inside = (real) => {
@@ -233,14 +239,16 @@ function readConfigFile(f, root, dir, fs, p) {
  * The project key from a `sprintree.com/p/<KEY>` link in a doc file, nearest directory first: every link of a file is
  * looked at, the template placeholder (`.../p/KEY`) is skipped. Returns { key (upper-case), file } or null. A doc file
  * that is refused (outside the repo, not a regular file, too large, UTF-16BE) is skipped with a warning, never read.
- * Throws only when the placeholder is the sole link found. opts: { path, fs, home, root (the repo root, already computed), warn(line) }.
+ * Throws only when the placeholder is the sole link found. opts: { path, fs, home, root (what `repoRoot` returned for `dir`, a real path: then `dir` is a real path too), warn(line) }.
  */
 export function findDocKey(dir, opts = {}) {
   const p = opts.path ?? path;
   const fs = opts.fs ?? REAL_FS;
-  const root = "root" in opts ? opts.root : repoRoot(dir, opts);
+  // with `opts.root` given, `dir` must be its real path as well (resolveConfig passes both)
+  const start = "root" in opts ? dir : realOr(fs, p.resolve(dir), p);
+  const root = "root" in opts ? opts.root : climb(start, opts);
   let placeholderIn = null;
-  for (const d of ancestors(dir, root, p, fs)) {
+  for (const d of ancestors(start, root, p)) {
     for (const name of DOC_FILES) {
       const f = p.join(d, name);
       let text;
@@ -273,10 +281,11 @@ export function resolveConfig(dir, opts = {}) {
   const p = opts.path ?? path;
   const fs = opts.fs ?? REAL_FS;
   const warn = opts.warn ?? null;
-  const root = repoRoot(dir, opts);
+  const start = realOr(fs, p.resolve(dir), p);
+  const root = climb(start, opts);
   const config = {};
   let source = null;
-  for (const d of ancestors(dir, root, p, fs)) {
+  for (const d of ancestors(start, root, p)) {
     const f = p.join(d, ".sprintree.json");
     const parsed = readConfigFile(f, root, d, fs, p);
     if (!parsed) continue;
@@ -300,7 +309,7 @@ export function resolveConfig(dir, opts = {}) {
     break;
   }
   if (!config.project) {
-    const found = findDocKey(dir, { path: p, fs, root, warn });
+    const found = findDocKey(start, { path: p, fs, root, warn });
     if (found) {
       config.project = found.key;
       source = source ?? found.file;
@@ -383,103 +392,273 @@ function authHeader(env) {
 // its introducer (OSC 52 writes the clipboard, and so do the C1 forms, which CONTROL_RE removes), and the payload
 // of a string sequence stays visible as plain text: an unterminated OSC/DCS/APC/PM/SOS must never swallow the text
 // after it. Every other C0/C1 control except \n and \t goes too, and so do the characters that make text read
-// differently from what it is (HIDDEN): format characters (Cf: bidi controls, zero-width space, word joiner, BOM,
-// soft hyphen), every Default_Ignorable_Code_Point (also the unassigned ones in that set: U+2065, U+FFF0-FFF8, most of
-// the U+E0000-E0FFF block), tag characters, variation selectors (Mongolian ones too), and the fillers that print as
-// nothing (Hangul, Khmer, U+034F, Egyptian hieroglyph format controls). U+2028, U+2029 and U+2800 become a space, and a
-// lone surrogate becomes U+FFFD first (stripping a format character between a high and a low surrogate would join them
-// into a tag character). Default_Ignorable_Code_Point covers the Mongolian selectors U+180B-180F; the hieroglyph
-// format controls U+13430-1343F are listed because Unicode 14 (Node 18.7.0) does not class them as Cf. What real text needs stays:
-//   - ZWJ U+200D (emoji sequences), ZWNJ U+200C (Persian), LRM U+200E, RLM U+200F;
+// differently from what it is (HIDDEN): the format characters (Cf: bidi controls, zero-width space, word joiner, BOM,
+// soft hyphen), every Default_Ignorable_Code_Point (also the unassigned ones in that set, tag characters and variation
+// selectors among them) and the Mongolian selectors, and the fillers that print as nothing. U+2028, U+2029 and U+2800
+// become a space, and a lone surrogate becomes U+FFFD first (stripping a format character between a high and a low
+// surrogate would join them into a tag character). Default_Ignorable_Code_Point covers U+180B-180F; the hieroglyph
+// format controls U+13430-1343F are Cf only from Unicode 15 (Node 18.7.0 has 14), so U+13439-1343F are listed. What real
+// text needs stays:
+//   - ZWJ U+200D (emoji sequences), ZWNJ U+200C (Persian), LRM U+200E, RLM U+200F: ONE of them between two visible
+//     characters, the first of a run (a run would carry two bits per character). At the start or end of the text or of a
+//     line, next to a space or a mark, or with no visible character on one side it goes. Hidden characters between do not
+//     count: they are removed first, then runs are looked at;
 //   - ONE variation selector VS1-16 (U+FE00-FE0F) directly after a visible base character (an emoji presentation
 //     selector), and one VS17-256 (U+E0100-E01EF) directly after a CJK ideograph; a run, a leading one or one after
 //     another format character is removed;
 //   - the tag characters of the three subdivision flags (England, Scotland, Wales): U+1F3F4, a tag code, U+E007F.
 // Every other tag character is removed: a fake flag can spell a command with them.
 const VS = String.raw`\ufe00-\ufe0f\u{e0100}-\u{e01ef}`;
-const HIDDEN = String.raw`\p{Cf}\p{Default_Ignorable_Code_Point}\u{13430}-\u{1343f}`;
+const HIDDEN = String.raw`\p{Cf}\p{Default_Ignorable_Code_Point}\u{13439}-\u{1343f}`;
 const CJK = String.raw`\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u{20000}-\u{2a6df}\u{2a700}-\u{2ebef}\u{2f800}-\u{2fa1f}\u{30000}-\u{323af}`;
 // England, Scotland, Wales: a black flag, the tag letters of the region code, a cancel tag
 const FLAG = `\\u{1f3f4}(?:${"gbeng|gbsct|gbwls".replace(/[a-z]/g, (c) => String.fromCodePoint(0xe0000 + c.charCodeAt(0)))})\\u{e007f}`;
-// A variation selector needs a visible base: not a space, a control, a mark, a format character, or a code point with no character
-const BASE = String.raw`[^\p{Z}\p{Cc}\p{Cn}\p{Cs}\p{Co}\p{M}${HIDDEN}]`;
+// A visible character: not a space, a control, a mark, a format character, or a code point with no character
+const BASE = String.raw`[^\p{Z}\p{Cc}\p{Cn}\p{Co}\p{M}${HIDDEN}]`;
 const ESC_SEQ_RE = /\u001b(?:\[[0-?]*[ -/]*[@-~]?|[ -/]*[0-~]?)/g;
 const CONTROL_RE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g;
-const INVISIBLE_RE = new RegExp(`(${FLAG}|[\\u200c-\\u200f]|(?<=${BASE})[\\ufe00-\\ufe0f](?![${VS}])|(?<=[${CJK}])[\\u{e0100}-\\u{e01ef}](?![${VS}]))|[${HIDDEN}]`, "gu");
+const LONE_SURROGATE_RE = /[\ud800-\udfff]/gu; // in `u` mode only a half that has no partner
+// What is kept is group 1; any other match is removed (the joiners U+200C-200F too: dropInvisible decides on those)
+const INVISIBLE_RE = new RegExp(`(${FLAG}|(?<=${BASE})[\\ufe00-\\ufe0f](?![${VS}])|(?<=[${CJK}])[\\u{e0100}-\\u{e01ef}](?![${VS}]))|[${HIDDEN}]`, "gu");
 const HIDDEN_RE = new RegExp(`[${HIDDEN}]`, "gu");
+const BASE_RE = new RegExp(BASE, "u");
+const VS_RE = new RegExp(`[${VS}]`, "u");
+
+/** A visible character, `cp` a code point (-1: none, which is not). */
+const isBase = (cp) => (cp < 0x80 ? cp > 0x20 && cp < 0x7f : BASE_RE.test(String.fromCodePoint(cp)));
+/** The code point that ends `s` before index `i`. */
+const codePointBefore = (s, i) => {
+  const low = s.charCodeAt(i - 1);
+  const high = low >= 0xdc00 && low <= 0xdfff ? s.charCodeAt(i - 2) : 0;
+  return high >= 0xd800 && high <= 0xdbff ? s.codePointAt(i - 2) : low;
+};
+
+/**
+ * A growing string made of UTF-16 code units. `replace` with a callback (or `$1`) on a global regex first collects every
+ * match: 64 MB of nothing but matches ran the process out of memory. The passes below read the matches one at a time
+ * (`exec`) and write here instead; a match costs two array slots, not an object.
+ */
+class Units {
+  constructor(size) {
+    this.buf = new Uint16Array(size);
+    this.n = 0;
+  }
+  /** Append `s[from, to)`. */
+  add(s, from, to) {
+    const { buf } = this;
+    let n = this.n;
+    for (let i = from; i < to; i++) buf[n++] = s.charCodeAt(i);
+    this.n = n;
+  }
+  /** Append one code unit. */
+  unit(c) {
+    this.buf[this.n++] = c;
+  }
+  toString() {
+    return unitsToString(this.buf, this.n);
+  }
+}
+
+const LITTLE_ENDIAN = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
+
+/** The string made of the first `n` code units of `buf` (one copy; the chunked fallback is for a big-endian machine, where the bytes are not UTF-16LE). */
+function unitsToString(buf, n) {
+  if (LITTLE_ENDIAN) return Buffer.from(buf.buffer, buf.byteOffset, 2 * n).toString("utf16le");
+  const CHUNK = 8192;
+  const parts = [];
+  for (let i = 0; i < n; i += CHUNK) parts.push(String.fromCharCode.apply(null, buf.subarray(i, Math.min(i + CHUNK, n))));
+  return parts.join("");
+}
+
+/** `text` with every match of the global regex `re` replaced by what `put(units, match)` writes (nothing without `put`). `size`: the most code units the result can have. */
+function rewrite(text, re, put = null, size = text.length) {
+  re.lastIndex = 0;
+  let m = re.exec(text);
+  if (m === null) return text;
+  const out = new Units(size);
+  let at = 0;
+  do {
+    out.add(text, at, m.index);
+    if (put) put(out, m);
+    at = m.index + m[0].length;
+  } while ((m = re.exec(text)) !== null);
+  out.add(text, at, text.length);
+  return out.toString();
+}
+
+/** INVISIBLE_RE applied: what it keeps stays, everything else goes, and of the joiners U+200C-200F only the first of a run between two visible characters stays. */
+function dropInvisible(text) {
+  INVISIBLE_RE.lastIndex = 0;
+  let m = INVISIBLE_RE.exec(text);
+  if (m === null) return text;
+  const out = new Units(text.length);
+  let at = 0;
+  let last = -1; // the last code point written
+  let joiner = -1; // the first joiner of the run being read, not written yet
+  let leftSeen = false; // a visible character stood before that run
+  // the run is over: `next` is the code point that follows it
+  const settle = (next) => {
+    if (joiner >= 0 && leftSeen && isBase(next)) {
+      out.unit(joiner);
+    }
+    joiner = -1;
+  };
+  do {
+    if (m.index > at) {
+      settle(text.codePointAt(at));
+      out.add(text, at, m.index);
+      last = codePointBefore(text, m.index);
+    }
+    if (m[1] !== undefined) {
+      settle(m[1].codePointAt(0));
+      out.add(m[1], 0, m[1].length);
+      last = codePointBefore(m[1], m[1].length);
+    } else if (joiner < 0 && m[0] >= "\u200c" && m[0] <= "\u200f") {
+      joiner = m[0].charCodeAt(0);
+      leftSeen = isBase(last) || (last >= 0 && VS_RE.test(String.fromCodePoint(last)));
+    }
+    at = m.index + m[0].length;
+  } while ((m = INVISIBLE_RE.exec(text)) !== null);
+  if (at < text.length) {
+    settle(text.codePointAt(at));
+    out.add(text, at, text.length);
+  }
+  return out.toString();
+}
 
 /** Text made safe to print on a terminal: control sequences and invisible characters removed (ESC sequences first, so one cannot be split). */
 export function stripControls(text) {
-  return String(text)
-    .replace(/[\ud800-\udfff]/gu, "\ufffd")
-    .replace(ESC_SEQ_RE, "")
-    .replace(CONTROL_RE, "")
-    .replace(/[\u2028\u2029\u2800]/g, " ")
-    .replace(INVISIBLE_RE, "$1");
+  let s = String(text);
+  s = rewrite(s, LONE_SURROGATE_RE, (out) => out.unit(0xfffd));
+  s = rewrite(s, ESC_SEQ_RE);
+  s = rewrite(s, CONTROL_RE);
+  s = rewrite(s, /[\u2028\u2029\u2800]/g, (out) => out.unit(0x20));
+  return dropInvisible(s);
 }
 
-/** `text` as it reads to a person: with every character of HIDDEN left out, the kept ones (ZWJ, a variation selector, ...) too. */
-const readable = (text) => text.replace(HIDDEN_RE, "");
+/** True when `text` reads as a refusal ("Error:" first, whitespace and every HIDDEN character, the kept ones too, left out). Reads only as far as it needs: a 64 MB answer is not copied for this. */
+function isRefusal(text) {
+  let head = "";
+  let at = 0;
+  while (head.length < 6 && at < text.length) {
+    const m = HIDDEN_RE.exec(text);
+    const piece = text.slice(at, m ? m.index : text.length);
+    head += head === "" ? piece.trimStart() : piece;
+    at = m ? m.index + m[0].length : text.length;
+  }
+  HIDDEN_RE.lastIndex = 0;
+  return head.startsWith("Error:");
+}
 
-// A token can be hidden in text in three ways: by characters that print as nothing (the kept ZWJ, ZWNJ, LRM, RLM, a
-// variation selector, flag tags), percent-encoded (`Bearer%20itn%5F...`) or written as a `\u005f` escape. gitleaks
-// decodes the last two (recursively, up to 5 levels), so redaction looks at a view of the text: HIDDEN characters left
-// out, ASCII escapes decoded. Every match is mapped back to the text it came from and replaced there.
-// What differs from gitleaks, on purpose (decision of 2026-10-11): it also decodes base64 and hex segments, this does
-// not. Percent and `\u` escapes are decoded (depth 5, like gitleaks); base64 and hex are not, and the configured
-// SPRINTREE_TOKEN is always hidden, encoded or not.
-const ESCAPE_RE = /%([0-7][0-9a-fA-F])|\\{1,2}[uU]00([0-7][0-9a-fA-F])/g;
+// A token can be hidden in text by characters that print as nothing (the kept joiners, a variation selector, flag
+// tags), percent-encoded (`Bearer%20itn%5F...`) or written as a `_` escape. gitleaks decodes the last two, so
+// redaction looks at a view of the text: HIDDEN characters left out, escapes decoded (recursively, up to 5 levels, as
+// gitleaks does). Every match is mapped back to the text it came from and replaced there. What gitleaks decodes, and so
+// does this: `%XX` for the ASCII characters from tab to `~` (not the controls U+0000-0008 and DEL, not a byte of a
+// multi-byte character) and `\uXXXX` or `\\uXXXX` for any code unit. What it does on top: it also decodes base64 and hex
+// segments, this does not.
+const ESCAPE_RE = /%(0[9a-fA-F]|[1-6][0-9a-fA-F]|7[0-9a-eA-E])|\\{1,2}[uU]([0-9a-fA-F]{4})/g;
 const MAX_DECODE_DEPTH = 5;
-// One-way gate: the plain text goes straight to the token regex when no HIDDEN character and no escape is in it
+// Fast path: the text goes straight to the token regex when no HIDDEN character and no escape is in it
 const NEEDS_VIEW_RE = new RegExp(`[${HIDDEN}]|${ESCAPE_RE.source}`, "u");
+const MASK = "[token]";
+const decodeEscape = (m, a, b) => String.fromCharCode(parseInt(a ?? b, 16));
 
-/** The configured token and anything shaped like a Sprintree token (itn_, itna_, itnr_) replaced by [token]. */
+/** `s` with its escapes decoded once, again and again up to the decoding depth: every form it can take, `s` itself first. */
+function decodedForms(s) {
+  const forms = [s];
+  for (let depth = 0; depth < MAX_DECODE_DEPTH; depth++) {
+    const next = s.replace(ESCAPE_RE, decodeEscape);
+    if (next === s) break;
+    forms.push((s = next));
+  }
+  return forms;
+}
+
+const regexEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * The configured token and anything shaped like a Sprintree token (itn_, itna_, itnr_) replaced by [token].
+ * The configured token (at least 6 characters; a shorter one is no secret) goes wherever one of its forms (as given, or with its
+ * own escapes decoded) stands in the text as it is, or in the view of it described above. Nothing else is looked at.
+ */
 function redact(text, env) {
   text = String(text);
   const mine = (env.SPRINTREE_TOKEN || "").trim().replace(/^Bearer\s+/i, "");
-  const re = mine.length >= 6 ? new RegExp(`${mine.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}|${TOKEN_SRC}`, "g") : TOKEN_RE_ALL;
+  const own = mine.length >= 6;
+  const forms = own ? [...new Set(decodedForms(mine))].filter((f) => f.length >= 6) : [];
+  const re = forms.length ? new RegExp(`${forms.map(regexEscape).join("|")}|${TOKEN_SRC}`, "g") : TOKEN_RE_ALL;
+  // a match is at least 6 characters (a token 24) and becomes 7: the result is longer by at most one character per match
+  const room = (n) => n + Math.floor(n / (forms.length ? 6 : 24)) + 7;
+  const mask = (out) => out.add(MASK, 0, MASK.length);
   // the configured token as it stands in the text, even when it holds a `%XX` or `\u00XX` of its own (the decoded view would turn it into something else)
-  if (mine.length >= 6) text = text.split(mine).join("[token]");
-  if (!NEEDS_VIEW_RE.test(text)) return text.replace(re, "[token]");
-  // spans[2i], spans[2i+1]: the part of `text` that character i of `view` stands for (one allocation; a decoding pass shrinks it in place)
-  const spans = new Int32Array(2 * text.length);
-  let len = 0;
-  let at = 0;
-  const keep = (end) => {
-    for (let i = at; i < end; i++, len++) (spans[2 * len] = i, spans[2 * len + 1] = i + 1);
-  };
-  let view = text.replace(HIDDEN_RE, (m, i) => {
-    keep(i);
-    at = i + m.length;
-    return "";
-  });
-  keep(text.length);
-  for (let depth = 0; depth < MAX_DECODE_DEPTH && view.search(ESCAPE_RE) >= 0; depth++) {
-    const old = view.length;
-    let from = 0; // next unread view character
-    let to = 0; // next free span
-    const copy = (end) => {
+  if (own) text = rewrite(text, new RegExp(regexEscape(mine), "g"), mask, room(text.length));
+  if (!NEEDS_VIEW_RE.test(text)) return rewrite(text, re, mask, room(text.length));
+  // The view is a code unit array `cur`; spans[2i], spans[2i+1]: the part of `text` that unit i stands for. Removing and
+  // decoding shrink both in place (`move` keeps what lies between two edits).
+  const n = text.length;
+  const cur = new Uint16Array(n);
+  const spans = new Int32Array(2 * n);
+  for (let i = 0; i < n; i++) {
+    cur[i] = text.charCodeAt(i);
+    spans[2 * i] = i;
+    spans[2 * i + 1] = i + 1;
+  }
+  let len = n;
+  let from = 0; // next unread unit
+  let to = 0; // next free unit
+  const move = (end) => {
+    if (from !== to) {
+      cur.copyWithin(to, from, end);
       spans.copyWithin(2 * to, 2 * from, 2 * end);
-      to += end - from;
-      from = end;
-    };
-    view = view.replace(ESCAPE_RE, (m, a, b, i) => {
-      copy(i);
-      spans[2 * to] = spans[2 * i];
-      spans[2 * to + 1] = spans[2 * (i + m.length - 1) + 1];
+    }
+    to += end - from;
+    from = end;
+  };
+  let view = text;
+  HIDDEN_RE.lastIndex = 0;
+  let m = HIDDEN_RE.exec(text);
+  if (m !== null) {
+    do {
+      move(m.index);
+      from = m.index + m[0].length;
+    } while ((m = HIDDEN_RE.exec(text)) !== null);
+    move(n);
+    len = to;
+    view = unitsToString(cur, len);
+  }
+  for (let depth = 0; depth < MAX_DECODE_DEPTH; depth++) {
+    ESCAPE_RE.lastIndex = 0;
+    m = ESCAPE_RE.exec(view);
+    if (m === null) break;
+    from = 0;
+    to = 0;
+    do {
+      move(m.index);
+      const first = spans[2 * m.index];
+      const end = spans[2 * (m.index + m[0].length - 1) + 1];
+      cur[to] = parseInt(m[1] ?? m[2], 16);
+      spans[2 * to] = first;
+      spans[2 * to + 1] = end;
       to++;
-      from = i + m.length;
-      return String.fromCharCode(parseInt(a ?? b, 16));
-    });
-    copy(old);
+      from = m.index + m[0].length;
+    } while ((m = ESCAPE_RE.exec(view)) !== null);
+    move(len);
+    len = to;
+    view = unitsToString(cur, len);
   }
-  let out = "";
-  at = 0;
-  for (const m of view.matchAll(re)) {
-    out += text.slice(at, spans[2 * m.index]) + "[token]";
+  re.lastIndex = 0;
+  m = re.exec(view);
+  if (m === null) return text;
+  const out = new Units(room(n));
+  let at = 0;
+  do {
+    out.add(text, at, spans[2 * m.index]);
+    mask(out);
     at = spans[2 * (m.index + m[0].length - 1) + 1];
-  }
-  return out + text.slice(at);
+  } while ((m = re.exec(view)) !== null);
+  out.add(text, at, n);
+  return out.toString();
 }
 
 /** Everything that is printed goes through this: control sequences first (so they cannot split the token), then the token. */
@@ -675,7 +854,7 @@ export async function run(argv, deps = {}) {
     // Each item is cleaned on its own, then joined. Sprintree reports refusals as normal content starting with "Error:", in any item.
     const texts = (Array.isArray(result?.content) ? result.content : []).map((c) => scrub(c?.text ?? "", env));
     out(texts.join("\n"));
-    return result?.isError || texts.some((t) => readable(t).trimStart().startsWith("Error:")) ? 1 : 0;
+    return result?.isError || texts.some(isRefusal) ? 1 : 0;
   } catch (e) {
     err(`Error: ${scrub(e?.message ?? e, env)}`);
     return 1;

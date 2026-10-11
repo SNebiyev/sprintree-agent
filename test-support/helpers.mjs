@@ -76,13 +76,30 @@ export const TOKEN_CASES = [
   ["\\U escape, upper-case hex", `itna\\U005F${BODY}`, `itna_${BODY}`, "[token]"],
   ["escape inside the body", `itn_${BODY.slice(0, 10)}\\u002d${BODY.slice(10)}`, `itn_${BODY.slice(0, 10)}-${BODY.slice(10)}`, "[token]"],
   ["a non-ASCII escape is no token character", `itn%C3%A9_${BODY}`, null, `itn%C3%A9_${BODY}`],
+  ["a non-ASCII letter before it ends the word", `\u{e9}itn_${BODY}`, `itn_${BODY}`, "\u{e9}[token]"],
+  ["a CJK character before it", `\u{4e2d}itn_${BODY}`, `itn_${BODY}`, "\u{4e2d}[token]"],
+  ["a \\u escape of a non-ASCII letter before it", `x\\u00e9itn_${BODY}`, `itn_${BODY}`, `x\\u00e9[token]`],
+  ["a quote written as \\u201c before it", `x\\u201citn_${BODY}`, `itn_${BODY}`, `x\\u201c[token]`],
+  ["a \\u escape decodes any code unit, U+0000 too", `x\\u0000itn_${BODY}`, `itn_${BODY}`, `x\\u0000[token]`],
+  ["one byte of a multi-byte character is not decoded (gitleaks leaves it)", `x%C3itn_${BODY}`, null, `x%C3itn_${BODY}`],
+  ["a byte above DEL is not decoded", `x%C1itn_${BODY}`, null, `x%C1itn_${BODY}`],
+  ["the controls U+0000-0008 are not decoded", `x%01itn_${BODY}`, null, `x%01itn_${BODY}`],
+  ["DEL is not decoded", `x%7Fitn_${BODY}`, null, `x%7Fitn_${BODY}`],
+  ["a decoded escape earlier in the text does not shift a later one", `x %41 %69tn_${BODY} y`, `itn_${BODY}`, "x %41 [token] y"],
+  ["a tab is decoded", `x%09itn_${BODY}`, `itn_${BODY}`, `x%09[token]`],
+  ["~ is decoded", `x%7Eitn_${BODY}`, `itn_${BODY}`, `x%7E[token]`],
 ];
 
-/** What gitleaks sees of `text`: %XX and \uXXXX escapes decoded, again and again up to its default depth of 5. */
+/**
+ * What gitleaks sees of `text` (v8.30.1, measured on every `%XX` and every `\uXXXX`): `%XX` decoded for the ASCII characters from tab to `~`
+ * (not U+0000-0008, not DEL, not a byte of a multi-byte character), `\uXXXX` and `\\uXXXX` (also with a capital U) for any code unit, again and
+ * again up to its default depth of 5. (Where gitleaks gives up on a whole line because one of its `%XX` is not decodable, this model and st.mjs decode
+ * the others: st.mjs is stricter there, see the test "stricter than gitleaks".)
+ */
 export function decodeEscapes(text) {
   let t = text;
   for (let i = 0; i < 5; i++) {
-    const next = t.replace(/%([0-9a-fA-F]{2})|\\{1,2}[uU]([0-9a-fA-F]{4})/g, (m, a, b) => String.fromCharCode(parseInt(a ?? b, 16)));
+    const next = t.replace(/%(0[9a-fA-F]|[1-6][0-9a-fA-F]|7[0-9a-eA-E])|\\{1,2}[uU]([0-9a-fA-F]{4})/g, (m, a, b) => String.fromCharCode(parseInt(a ?? b, 16)));
     if (next === t) break;
     t = next;
   }
