@@ -60,12 +60,6 @@ Sources: https://geminicli.com/docs/extensions/, https://geminicli.com/docs/exte
 ## (d) Generic fallback
 
 - `AGENTS.md` is the shared convention (Codex reads it natively; Claude Code reads `CLAUDE.md`, which can import `@AGENTS.md`; Gemini reads `GEMINI.md`/`contextFileName`).
-  This repo ships a self-contained `AGENTS.md` (short rules plus a pointer to the full skill) and the extension's `GEMINI.md`.
+  This repo ships a self-contained template `templates/AGENTS.md` (short rules plus a pointer to the full skill) and the extension's `GEMINI.md`.
 - Any MCP-capable agent: add `https://sprintree.com/mcp` as a Streamable HTTP server with OAuth, or a PAT bearer header.
-- No MCP at all: `skills/sprintree/scripts/st.mjs` speaks the same JSON-RPC over HTTP using only Node >= 18.
-
-## Sprintree side (read from the Sprintree repo)
-
-Settings, MCP section (`frontend/src/app/(app)/(workspace)/settings/page.tsx`) shows per client: ChatGPT = paste URL (Developer mode, OAuth);
-Codex `codex mcp add sprintree --url <origin>/mcp`; Claude Code `claude mcp add --transport http --scope user sprintree <origin>/mcp`;
-Gemini CLI `gemini mcp add --transport http --scope user sprintree <origin>/mcp`. All OAuth. ChatGPT has no skill mechanism in this draft.
+- No MCP at all: `skills/sprintree/scripts/st.mjs` speaks the same JSON-RPC over HTTP using only Node >= 18.14.

@@ -7,19 +7,19 @@ No tag yet: the first sweep covers the WHOLE repo (there was never a clean point
 **Rule: nothing is pushed to master before a green sweep.** Not a one-line fix, not docs.
 
 ## Stack
-Dependency-free Node (>=18) scripts and JSON manifests, a Markdown skill. No build step.
+Dependency-free Node (>=18.14) scripts and JSON manifests, a Markdown skill. No build step.
 
 ## gate (every commit)
 ```bash
-node --test test/st.test.mjs test/tools.test.mjs test/version.test.mjs   # local Node
-for n in 18 24; do npx -y node@$n --test test/st.test.mjs test/tools.test.mjs test/version.test.mjs; done
-node scripts/lint-json.mjs
-node scripts/check-version.mjs        # package.json = plugin.json = gemini-extension.json = st.mjs VERSION = CHANGELOG top heading
-claude plugin validate . && claude plugin validate .claude-plugin/marketplace.json
+npm test                                                              # local Node; one run = unit tests + tool check + version check + JSON lint
+for n in 18.20.8 24; do npx -y node@$n --test test/st.test.mjs test/tools.test.mjs test/version.test.mjs test/lint-json.test.mjs; done
+claude plugin validate . && claude plugin validate .claude-plugin/plugin.json && claude plugin validate .claude-plugin/marketplace.json
 docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:latest
 # gitleaks needs a real .git dir: in a worktree (.git is a file) it scans 0 commits, so scan a clone (check "N commits scanned" > 0)
-rm -rf "$SCRATCH/gl" && git clone -q --no-local . "$SCRATCH/gl" && docker run --rm -v "$SCRATCH/gl:/repo" zricethezav/gitleaks:latest detect --source /repo --log-opts=--all --no-banner
+rm -rf "$SCRATCH/gl" && git clone -q --no-local . "$SCRATCH/gl" && docker run --rm -v "$SCRATCH/gl:/repo" zricethezav/gitleaks:latest detect --source /repo --config /repo/.gitleaks.toml --log-opts=--all --no-banner
 ```
+Negative control (must FAIL): in a throwaway git repo outside the worktree, commit a file with a fake `itn_` token (also one bare in prose)
+and run the same gitleaks command with `--config /repo/.gitleaks.toml` copied there.
 Evidence is the output (`# pass N`, `# fail 0`, `no leaks found`), not the exit code. Keep this a superset of `.github/workflows/test.yml`.
 
 ## sweep
@@ -34,4 +34,4 @@ Evidence is the output (`# pass N`, `# fail 0`, `no leaks found`), not the exit 
 
 ## Traps
 - `cp`/`rm` are `-i` aliases here: use `/bin/cp -f`.
-- Tokens must never appear in fixtures except obviously fake ones (see `.gitleaks.toml` if present).
+- Tokens must never appear in fixtures except obviously fake ones (`.gitleaks.toml` has a rule for `itn_` tokens).

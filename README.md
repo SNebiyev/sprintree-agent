@@ -17,16 +17,16 @@ Model-independent.
    - `task`: sync, then claim and start the next To do card.
    - rule zero (nothing unverified on the board), never duplicate, epic > story > task, status by category,
      a card template, and the API traps.
-3. **`scripts/st.mjs`**, a dependency-free Node >= 18 MCP client for sessions where MCP is not connected.
+3. **`scripts/st.mjs`**, a dependency-free Node >= 18.14 MCP client for sessions where MCP is not connected.
 
 ## Install (one command per client)
 
 | Client | Command |
 |---|---|
 | Claude Code | `claude plugin marketplace add SNebiyev/sprintree-agent && claude plugin install sprintree@sprintree` |
-| Codex CLI | `codex mcp add sprintree --url https://sprintree.com/mcp` then copy `skills/sprintree` to `~/.agents/skills/` (see below) |
+| Codex CLI | `codex mcp add sprintree --url https://sprintree.com/mcp` then clone this repo and copy `skills/sprintree` to `~/.agents/skills/` (see below) |
 | Gemini CLI | `gemini extensions install https://github.com/SNebiyev/sprintree-agent` |
-| Any other MCP agent | add `https://sprintree.com/mcp` as a Streamable HTTP server, paste `AGENTS.md` into your repo |
+| Any other MCP agent | add `https://sprintree.com/mcp` as a Streamable HTTP server, paste `templates/AGENTS.md` into your repo |
 
 ### Claude Code
 
@@ -46,11 +46,12 @@ The plugin bundles the skill and `.mcp.json` (the MCP server).
 
 ```bash
 codex mcp add sprintree --url https://sprintree.com/mcp      # opens the browser for OAuth
+git clone https://github.com/SNebiyev/sprintree-agent && cd sprintree-agent
 mkdir -p ~/.agents/skills && cp -r skills/sprintree ~/.agents/skills/   # Windows: copy the folder to %USERPROFILE%\.agents\skills
 ```
 
-Per repo, use `.agents/skills/sprintree` instead, and add the `AGENTS.md` snippet from this repo to the
-repo's own `AGENTS.md`. Codex plugin packaging is documented by OpenAI but not verified here; see `docs/RESEARCH.md`.
+Per repo, use `.agents/skills/sprintree` instead, and add `templates/AGENTS.md` from this repo to the
+repo's own `AGENTS.md`. Codex plugin packaging is documented by OpenAI but not verified here; see `docs/maintainers/RESEARCH.md`.
 
 ### Gemini CLI
 
@@ -63,7 +64,7 @@ For development: `gemini extensions link <path-to-this-repo>`.
 
 ### Generic
 
-Add `https://sprintree.com/mcp` as a remote (Streamable HTTP) MCP server in your agent, then put `AGENTS.md`
+Add `https://sprintree.com/mcp` as a remote (Streamable HTTP) MCP server in your agent, then put `templates/AGENTS.md`
 from this repo (or its contents) into your repo or custom instructions.
 
 ## Auth
@@ -88,11 +89,12 @@ Report a vulnerability: see `SECURITY.md`.
 ## Configure (optional)
 
 Link the board in your repo's `AGENTS.md`/`CLAUDE.md`/`GEMINI.md` as `https://sprintree.com/p/<KEY>`, or add a
-`.sprintree.json` (see `.sprintree.example.json`): `project`, `language`, `typography`, and `statuses` (an optional override: the category names `todo`, `in_progress`, `review`, `done` work in every project).
+`.sprintree.json` (copy `.sprintree.example.json`, which shows all five keys). What each key does is described
+once, in [SKILL.md, "Configuration"](skills/sprintree/SKILL.md#configuration-all-optional).
 
 ## The fallback client
 
-Needs Node 18+. Use it only when the MCP tools are not available in the session. It is **PAT-only**: a connected
+Needs Node >= 18.14 (`engines.node`). Use it only when the MCP tools are not available in the session. It is **PAT-only**: a connected
 client's OAuth session is not visible to `st.mjs`, so export a token first.
 
 ```bash
@@ -103,29 +105,19 @@ echo '{"project":"KEY"}' | node skills/sprintree/scripts/st.mjs call list_status
 node skills/sprintree/scripts/st.mjs version
 ```
 
+- The examples above assume a clone of this repo. Installed as a skill, the client is the skill's own `scripts/st.mjs`
+  (`~/.agents/skills/sprintree/`, `~/.gemini/extensions/sprintree/skills/sprintree/`, or the Claude Code plugin cache).
 - **Windows PowerShell 5.1** mangles quotes in inline JSON: use `call <tool> @args.json` or pipe into `call <tool> -`.
+  PS 5.1 also pipes and writes ASCII by default, which turns ə/ç/ş into `?`. Write the file with
+  `[IO.File]::WriteAllText($path, $json)` (UTF-8 without BOM), or set `$OutputEncoding = [Text.UTF8Encoding]::new($false)`
+  before piping into `call <tool> -`.
 - `SPRINTREE_TIMEOUT_MS`: per-request timeout, default 30000.
 - `SPRINTREE_MCP_URL`: override the server URL. It must be https (plain http only for localhost, 127.0.0.1, ::1).
 - `.sprintree.json` holds project settings only. It must not hold tokens.
 
-## Develop / Release
+## Contributing
 
-`npm test` (Node >= 18, mocked fetch, no network): unit tests, the tool-consistency check and `scripts/check-version.mjs`.
-`npm run lint:json` parses the manifests. `npm run tools:refresh` rebuilds `test/tools.snapshot.json` from the live
-server (needs `SPRINTREE_TOKEN`, never runs in CI). CI (`.github/workflows/test.yml`): ubuntu, macos, windows x Node 18, 22, 24.
-Nothing is pushed to master before the PCC gate and sweep in `.claude/pcc.md` are green.
-
-**Versioning:** SemVer. While 0.x, a skill rule change is a minor bump and a fix is a patch. Claude Code only updates an
-installed plugin when `version` changes, so a release without a bump reaches nobody. The version lives in `package.json`,
-`.claude-plugin/plugin.json`, `gemini-extension.json`, `VERSION` in `skills/sprintree/scripts/st.mjs` and the top
-released heading of `CHANGELOG.md` ([Keep a Changelog](https://keepachangelog.com/en/1.1.0/)); `check-version.mjs` fails
-if they differ (and, on a tag build, if the tag differs).
-
-**Release steps:**
-1. Bump all four version fields, move the `[Unreleased]` notes under `## [x.y.z] - YYYY-MM-DD` in `CHANGELOG.md`.
-2. `npm test` and the rest of the PCC gate green, push, CI green.
-3. `git tag vX.Y.Z && git push origin vX.Y.Z` (CI re-checks the tag against the version).
-4. Create the GitHub Release from the tag with the changelog section as notes.
+Tests, the PCC gate and the release steps are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

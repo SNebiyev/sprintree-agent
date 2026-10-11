@@ -24,5 +24,4 @@ jobs:
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: ${{ matrix.node }}
-      - run: npm test # node --test (includes the tool-consistency check) + scripts/check-version.mjs
-      - run: node scripts/lint-json.mjs
+      - run: npm test # node --test: client, tool-consistency check, version check, JSON manifests

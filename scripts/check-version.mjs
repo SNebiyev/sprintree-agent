@@ -4,6 +4,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isMainModule } from "../skills/sprintree/scripts/st.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (f) => readFileSync(join(root, f), "utf8");
@@ -26,7 +27,7 @@ export function check(found) {
   return Object.entries(found).filter(([, v]) => v !== want).map(([k, v]) => `${k}: ${v ?? "missing"} (package.json says ${want})`);
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+if (isMainModule(process.argv[1], import.meta.url)) {
   const found = collect();
   const bad = check(found);
   for (const [k, v] of Object.entries(found)) console.log(`${bad.some((b) => b.startsWith(k + ":")) ? "FAIL" : "ok  "} ${k} = ${v}`);

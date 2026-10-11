@@ -1,5 +1,14 @@
 {
   "project": "KEY",
   "language": "English",
-  "typography": "plain hyphen, no em dash"
+  "typography": "plain hyphen, no em dash",
+  "statuses": { "done": "shipped" },
+  "section_titles": {
+    "context": "Context",
+    "evidence": "Findings / evidence",
+    "done": "What was done",
+    "todo": "What to do",
+    "verify": "How to verify",
+    "sources": "Sources"
+  }
 }

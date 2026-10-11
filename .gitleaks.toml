@@ -1,0 +1,11 @@
+# Extends gitleaks' default rules with one for Sprintree personal access tokens (they start with `itn_`).
+title = "sprintree-agent"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "sprintree-pat"
+description = "Sprintree personal access token"
+regex = '''\bitn_[A-Za-z0-9_-]{20,}'''
+keywords = ["itn_"]
