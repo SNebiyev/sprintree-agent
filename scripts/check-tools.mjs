@@ -8,7 +8,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { makeClient, isMainModule } from "../skills/sprintree/scripts/st.mjs";
+import { makeClient, listTools, isMainModule } from "../skills/sprintree/scripts/st.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const SNAPSHOT = path.join(ROOT, "test", "tools.snapshot.json");
@@ -17,6 +17,9 @@ export const DOCS = ["skills/sprintree/SKILL.md", "templates/AGENTS.md", "README
 // Backticked snake_case words that are not tools, arguments or enum values of the live server:
 // `.sprintree.json` keys and a Codex config option.
 export const ALLOW = new Set(["section_titles", "bearer_token_env_var"]);
+
+/** True when `tool` takes the argument `k`. */
+const hasArg = (tools, tool, k) => Object.hasOwn(tools[tool].properties, k);
 
 /** Collect every enum value found anywhere inside a JSON schema fragment. */
 function enumsOf(schema, acc = new Set()) {
@@ -72,20 +75,28 @@ function jsonObjects(line) {
 export function checkText(text, snap, file = "text") {
   const problems = [];
   const tools = snap.tools;
-  const allProps = new Map(); // arg name -> Set of enum values across all tools (only for words that are not tool-specific)
+  // arg name -> the enum values it has across all tools, and whether some tool takes it as free text. The union is the
+  // fallback when no tool can be named for a JSON example; an enum only binds when every tool that has the arg enumerates it.
+  const allProps = new Map();
   const allEnums = new Set();
   for (const t of Object.values(tools)) {
     for (const [p, d] of Object.entries(t.properties)) {
-      if (!allProps.has(p)) allProps.set(p, new Set());
-      (d.enum ?? []).forEach((v) => { allProps.get(p).add(String(v)); allEnums.add(String(v)); });
+      if (!allProps.has(p)) allProps.set(p, { values: new Set(), free: false });
+      const entry = allProps.get(p);
+      if (d.enum) d.enum.forEach((v) => { entry.values.add(String(v)); allEnums.add(String(v)); });
+      else entry.free = true;
     }
   }
-  const lines = text.split(/\r?\n/);
-  lines.forEach((line, i) => {
+  const unionEnum = (k) => { const e = allProps.get(k); return e && !e.free && e.values.size ? e.values : null; };
+  let carry = null; // the last tool named earlier in this paragraph (a JSON example often sits on the line after its tool)
+  let fence = false; // inside a ```json block: a config example, not tool arguments
+  text.split(/\r?\n/).forEach((line, i) => {
     const at = `${file}:${i + 1}`;
-    // The tool an argument belongs to: the last tool named before it on the line, else the first one on the line.
+    if (!line.trim()) { carry = null; return; }
+    if (/^\s*```/.test(line)) { fence = !fence && /^\s*```json\b/.test(line); return; }
     const mentions = [...line.matchAll(SNAKE)].filter((m) => tools[m[0]]).map((m) => ({ name: m[0], index: m.index }));
-    const toolFor = (index) => ([...mentions].reverse().find((m) => m.index < index) ?? mentions[0])?.name ?? null;
+    // The tool an argument belongs to: the last tool named before it on the line, else the first one on the line, else the paragraph's.
+    const toolFor = (index) => ([...mentions].reverse().find((m) => m.index < index) ?? mentions[0])?.name ?? carry;
     // 1. Backticked snake_case words must be a tool, an argument, an enum value or allow-listed.
     for (const m of line.matchAll(/`([^`]+)`/g)) {
       const w = m[1];
@@ -93,30 +104,34 @@ export function checkText(text, snap, file = "text") {
         problems.push(`${at}: \`${w}\` is not a tool, argument or enum value of the live server`);
       }
     }
-    // 2. Inline args like `category:"todo"`: the argument must exist on the tool named before it, the value in ITS enum.
-    for (const m of line.matchAll(/\b([a-z][a-z0-9_]*)\s*:\s*"([^"]*)"/g)) {
-      const [, k, v] = m;
-      if (!allProps.has(k)) continue; // prose such as `statuses: ...` is covered by rule 1 only
-      const tool = toolFor(m.index);
-      if (tool && !tools[tool].properties[k]) { problems.push(`${at}: ${tool} has no argument "${k}"`); continue; }
-      const en = tool ? new Set((tools[tool].properties[k].enum ?? []).map(String)) : allProps.get(k);
-      if (en.size && !en.has(v)) problems.push(`${at}: ${tool ? `${tool}.` : ""}${k}:"${v}" is not one of [${[...en].join(", ")}]`);
+    // 2. `st.mjs call|schema <name>` must name a tool.
+    for (const m of line.matchAll(/st\.mjs\s+(?:call|schema)\s+([a-z][a-z0-9_]*)/g)) {
+      if (!tools[m[1]]) problems.push(`${at}: st.mjs names \`${m[1]}\`, which is not a tool of the live server`);
     }
-    // 3. JSON argument objects (quoted, backticked or bare) on a line that names a tool: keys and enum values must be that tool's.
-    for (const { index, raw } of jsonObjects(line)) {
-      let obj;
-      try { obj = JSON.parse(raw); } catch { problems.push(`${at}: JSON example does not parse: ${raw}`); continue; }
-      const tool = toolFor(index);
-      if (!tool) continue;
-      for (const [k, v] of Object.entries(obj)) {
-        const def = tools[tool].properties[k];
-        if (!def) { problems.push(`${at}: ${tool} has no argument "${k}"`); continue; }
-        const vals = [].concat(v).filter((x) => typeof x === "string");
-        if (def.enum) for (const x of vals) if (!def.enum.map(String).includes(x)) {
-          problems.push(`${at}: ${tool}.${k} "${x}" is not one of [${def.enum.join(", ")}]`);
+    if (!fence) {
+      // 3. Inline args like `category:"todo"`: the argument must exist on the tool named before it, the value in ITS enum.
+      for (const m of line.matchAll(/\b([a-z][a-z0-9_]*)\s*:\s*"([^"]*)"/g)) {
+        const [, k, v] = m;
+        const tool = toolFor(m.index);
+        if (tool && !hasArg(tools, tool, k)) { problems.push(`${at}: ${tool} has no argument "${k}"`); continue; }
+        const en = tool ? new Set((tools[tool].properties[k].enum ?? []).map(String)) : unionEnum(k);
+        if (en?.size && !en.has(v)) problems.push(`${at}: ${tool ? `${tool}.` : ""}${k}:"${v}" is not one of [${[...en].join(", ")}]`);
+      }
+      // 4. JSON argument objects (quoted, backticked or bare): keys and enum values must be those of the tool named on the line
+      //    or earlier in the paragraph; with no tool at all, of some tool.
+      for (const { index, raw } of jsonObjects(line)) {
+        let obj;
+        try { obj = JSON.parse(raw); } catch { problems.push(`${at}: JSON example does not parse: ${raw}`); continue; }
+        const tool = toolFor(index);
+        for (const [k, v] of Object.entries(obj)) {
+          if (tool ? !hasArg(tools, tool, k) : !allProps.has(k)) { problems.push(`${at}: ${tool ?? "no tool"} has no argument "${k}"`); continue; }
+          const en = tool ? tools[tool].properties[k].enum?.map(String) : [...(unionEnum(k) ?? [])];
+          const vals = [].concat(v).filter((x) => typeof x === "string");
+          if (en?.length) for (const x of vals) if (!en.includes(x)) problems.push(`${at}: ${tool ?? "any tool"}.${k} "${x}" is not one of [${en.join(", ")}]`);
         }
       }
     }
+    if (mentions.length) carry = mentions[mentions.length - 1].name;
   });
   return problems;
 }
@@ -129,18 +144,13 @@ export function checkAll(snap = JSON.parse(readFileSync(SNAPSHOT, "utf8"))) {
 export async function refresh({ fetchImpl = globalThis.fetch, env = process.env, file = SNAPSHOT } = {}) {
   const client = makeClient({ fetchImpl, env });
   await client.connect();
-  const answer = await client.rpc("tools/list", {});
-  if (!Array.isArray(answer?.tools)) throw new Error("the live tools/list answer has no `tools` array");
-  writeFileSync(file, JSON.stringify(buildSnapshot(answer.tools), null, 1) + "\n");
-  return answer.tools.length;
+  const tools = await listTools(client);
+  writeFileSync(file, JSON.stringify(buildSnapshot(tools), null, 1) + "\n");
+  return tools.length;
 }
 
 if (isMainModule(process.argv[1], import.meta.url)) {
   if (process.argv.includes("--refresh")) {
-    if (!process.env.SPRINTREE_TOKEN) {
-      console.error("Set SPRINTREE_TOKEN (a Sprintree personal access token) to refresh the snapshot.");
-      process.exit(1);
-    }
     refresh().then((n) => console.log(`snapshot refreshed: ${n} tools`), (e) => { console.error(`Error: ${e.message}`); process.exit(1); });
   } else {
     const p = checkAll();

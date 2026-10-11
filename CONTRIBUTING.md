@@ -2,13 +2,16 @@
 
 ## Tests
 
-`npm test` (Node >= 18.14, mocked `fetch`, no network) runs `node --test` over four files:
+`npm test` (Node >= 18.8.0, mocked `fetch`, no network) runs `node --test`, which discovers every `test/*.test.mjs` (add a file there and it runs; nothing lists them):
 
 - `test/st.test.mjs` - the fallback client `skills/sprintree/scripts/st.mjs`.
 - `test/tools.test.mjs` - every tool, argument and enum value named in the docs exists in `test/tools.snapshot.json`
   (`scripts/check-tools.mjs`).
 - `test/version.test.mjs` - one version everywhere (`scripts/check-version.mjs`; on a tag build the tag is checked too).
-- `test/lint-json.test.mjs` - every JSON manifest parses.
+- `test/lint-json.test.mjs` - every JSON file parses.
+- `test/docs.test.mjs` - the docs, the skill and the code agree (minimum Node, token text, task query, config example, no shell-pipe advice).
+
+`test-support/helpers.mjs` holds the shared mock `fetch` and temp-directory helpers. It lives outside `test/` because `node --test` runs every file inside a test directory.
 
 `npm run tools:refresh` rebuilds `test/tools.snapshot.json` from the live server (needs `SPRINTREE_TOKEN`, never runs in CI).
 CI (`.github/workflows/test.yml`) runs `npm test` on ubuntu, macos and windows with Node 18, 22 and 24.
@@ -22,7 +25,8 @@ Nothing is pushed to the main branch before it is green, not a one-line fix and 
 
 ## Release
 
-Versioning rules are in [CHANGELOG.md](CHANGELOG.md). The version lives in `package.json`, `.claude-plugin/plugin.json`,
+Versioning rules are in [CHANGELOG.md](CHANGELOG.md). Claude Code only updates an installed plugin when `version` changes, so a release without a bump reaches nobody.
+The version lives in `package.json`, `.claude-plugin/plugin.json`,
 `gemini-extension.json`, `VERSION` in `skills/sprintree/scripts/st.mjs` and the newest released heading of `CHANGELOG.md`;
 `npm test` fails if they differ.
 

@@ -1,12 +1,15 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
+import { writeFileSync, mkdirSync, symlinkSync, linkSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { run, resolveConfig, isMainModule, VERSION, ancestors, checkMcpUrl } from "../skills/sprintree/scripts/st.mjs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import {
+  run, resolveConfig, isMainModule, VERSION, ancestors, checkMcpUrl, MIN_NODE, KNOWN_CONFIG_KEYS, listTools, stripControls, findDocKey,
+} from "../skills/sprintree/scripts/st.mjs";
+import { ROOT, tmpDirs, reply, mockFetch, childEnv } from "../test-support/helpers.mjs";
 
 const TOKEN = "spt_secret_value_123456";
 const ST = fileURLToPath(new URL("../skills/sprintree/scripts/st.mjs", import.meta.url));
@@ -14,40 +17,18 @@ const PAT_PLACE = "Settings -> API & MCP -> Personal access tokens";
 
 // ---- helpers ---------------------------------------------------------------------------------
 
-const cleanups = [];
-after(() => cleanups.forEach((d) => rmSync(d, { recursive: true, force: true })));
+const scratch = tmpDirs();
+after(() => scratch.cleanup());
 
 /** Temp dir with a `.git` folder (so the config walk stops there) and the given files {relPath: string|Buffer}. */
 function tmpRepo(files = {}) {
-  const root = mkdtempSync(path.join(tmpdir(), "st-"));
-  cleanups.push(root);
+  const root = scratch.make("st-");
   mkdirSync(path.join(root, ".git"));
   for (const [rel, content] of Object.entries(files)) {
     mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
     writeFileSync(path.join(root, rel), content);
   }
   return root;
-}
-
-/** A JSON-RPC success answer to request `b`. */
-const reply = (b, result) => ({ json: { jsonrpc: "2.0", id: b.id, result } });
-
-function mockFetch(handler, { session = false } = {}) {
-  const calls = [];
-  const fn = async (url, init) => {
-    const body = JSON.parse(init.body);
-    calls.push({ url, init, headers: init.headers, body });
-    const r = handler(body);
-    const text = r.sse ? `event: message\ndata: ${JSON.stringify(r.json)}\n\n` : r.text ?? JSON.stringify(r.json ?? {});
-    return {
-      ok: r.status ? r.status < 400 : true,
-      status: r.status ?? 200,
-      headers: new Map(session ? [["mcp-session-id", "sess-1"]] : []),
-      text: async () => text,
-    };
-  };
-  fn.calls = calls;
-  return fn;
 }
 
 const server = (extra = () => null, initResult = {}) => (body) => {
@@ -359,7 +340,7 @@ test("config prints only the known keys; unknown keys are named on stderr, never
   const h = harness(() => null, { env: {}, cwd: root });
   assert.equal(await h.go(["config"]), 0);
   const printed = JSON.parse(h.lines.join("\n"));
-  assert.deepEqual(Object.keys(printed).sort(), ["language", "project", "section_titles", "statuses", "typography"]);
+  assert.deepEqual(Object.keys(printed).sort(), [...KNOWN_CONFIG_KEYS].sort());
   const all = [...h.lines, ...h.errs].join("\n");
   assert.ok(!all.includes("VALUE-ONE-SECRET") && !all.includes("VALUE-TWO-SECRET"), "value leaked");
   assert.match(h.errs.join("\n"), /ignored.*apiKey.*nested|ignored.*nested.*apiKey/s);
@@ -512,7 +493,7 @@ test("real fetch against a local server that redirects: clear error, the redirec
       err: (s) => errs.push(s),
     });
     assert.equal(code, 1);
-    assert.match(errs[0], /server redirected/);
+    assert.match(errs.at(-1), /server redirected/);
     assert.equal(hits, 1);
   } finally {
     srv.close();
@@ -531,7 +512,7 @@ test("network errors print the cause code and host only, no path, query, userinf
     err: (s) => errs.push(s),
   });
   assert.equal(code, 1);
-  assert.equal(errs[0], "Error: fetch failed: ECONNREFUSED example.test:8443");
+  assert.equal(errs.at(-1), "Error: fetch failed: ECONNREFUSED example.test:8443");
 });
 
 test("a thrown non-Error is reported through the one catch, scrubbed", async () => {
@@ -652,7 +633,7 @@ test("Node < 18 or missing global fetch gives a clear error", async () => {
   const errs = [];
   const base = { env: { SPRINTREE_TOKEN: TOKEN }, out: () => {}, err: (s) => errs.push(s) };
   assert.equal(await run(["tools"], { ...base, fetch: mockFetch(server()), nodeVersion: "16.20.2" }), 1);
-  assert.match(errs[0], /Node\.js 18 or newer/);
+  assert.match(errs[0], new RegExp(`Node\\.js ${MIN_NODE.replace(/\./g, "\\.")} or newer`));
   assert.match(errs[0], /16\.20\.2/);
   const saved = globalThis.fetch;
   globalThis.fetch = undefined;
@@ -673,18 +654,16 @@ test("isMainModule: false without argv[1] and for a path that does not exist", (
 });
 
 test("running the script directly executes main (all platforms)", () => {
-  const r = spawnSync(process.execPath, [ST, "version"], { env: { PATH: process.env.PATH }, encoding: "utf8" });
+  const r = spawnSync(process.execPath, [ST, "version"], { env: childEnv(), encoding: "utf8" });
   assert.equal(r.status, 0, r.stderr);
   assert.equal(r.stdout.trim(), VERSION);
 });
 
-test("running through a symlink still executes main", { skip: process.platform === "win32" }, () => {
-  const dir = tmpRepo();
-  const link = path.join(dir, "st-link.mjs");
+test("isMainModule: a symlink to the script counts as the script (unit test, no process spawned)", { skip: process.platform === "win32" }, () => {
+  const link = path.join(tmpRepo(), "st-link.mjs");
   symlinkSync(ST, link);
-  const r = spawnSync(process.execPath, [link, "tools"], { env: { PATH: process.env.PATH }, encoding: "utf8" });
-  assert.equal(r.status, 1);
-  assert.match(r.stderr, /SPRINTREE_TOKEN/);
+  assert.equal(isMainModule(link, pathToFileURL(ST).href), true);
+  assert.equal(isMainModule(link, import.meta.url), false);
 });
 
 // ---- path.win32: parent-directory walk and key lookup on Windows-style paths, runnable on any OS
@@ -694,7 +673,6 @@ function fakeFs(files, { real = {} } = {}) {
   const set = new Map(Object.entries(files).map(([k, v]) => [norm(k), v]));
   return {
     existsSync: (p) => set.has(norm(p)),
-    statSync: (p) => ({ isFile: () => typeof set.get(norm(p)) === "string" }),
     lstatSync: (p) => {
       if (!set.has(norm(p))) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
       return { isFile: () => typeof set.get(norm(p)) === "string", isSymbolicLink: () => false };
@@ -723,4 +701,229 @@ test("win32: key lookup from a nested dir finds AGENTS.md and .sprintree.json", 
   const cfg = resolveConfig("C:\\repo\\src\\deep", { path: w, fs: fs2 });
   assert.equal(cfg.project, "NEW");
   assert.equal(cfg._source, "C:\\repo\\src\\.sprintree.json");
+});
+
+// ---- hardening round 2 -----------------------------------------------------------------------
+
+const RAW_BAD = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f​-‏‪-‮⁦-⁩]/;
+const win = process.platform === "win32";
+
+test("S1 warnings: token-like key names and file paths are fully scrubbed (OSC 52 in a key, C1 in a key, ESC in a directory name)", { skip: win }, async () => {
+  const cfg = JSON.stringify({ project: "SPD", ["token\u001b]52;c;aGFja2Vk\u0007"]: "x", ["pat\u009b31m"]: "y", ["odd\u009d52;c;QQ==\u0007"]: 1 });
+  const root = tmpRepo({ ".sprintree.json": cfg });
+  const h = harness(() => null, { env: {}, cwd: root });
+  assert.equal(await h.go(["key"]), 0);
+  assert.ok(h.errs.length >= 2);
+  for (const e of h.errs) assert.ok(!RAW_BAD.test(e), JSON.stringify(e));
+  // a repo directory whose own name carries an OSC 0 title sequence
+  const base = tmpRepo();
+  const evil = path.join(base, "evil\u001b]0;PWNED\u0007dir");
+  mkdirSync(path.join(evil, ".git"), { recursive: true });
+  writeFileSync(path.join(evil, ".sprintree.json"), JSON.stringify({ project: "SPD", extra: 1, token: "t" }));
+  const g = harness(() => null, { env: {}, cwd: evil });
+  assert.equal(await g.go(["key"]), 0);
+  assert.ok(g.errs.length >= 2);
+  for (const e of g.errs) assert.ok(!RAW_BAD.test(e), JSON.stringify(e));
+  writeFileSync(path.join(evil, ".sprintree.json"), "not json");
+  const bad = harness(() => null, { env: {}, cwd: evil });
+  assert.equal(await bad.go(["key"]), 1);
+  for (const e of bad.errs) assert.ok(!RAW_BAD.test(e), JSON.stringify(e));
+});
+
+test("S1 config output: C1 and DEL are escaped as \\u00XX, bidi and zero-width characters are removed, the value survives", async () => {
+  const language = "a\u009b31mb\u009d52;c;QQ==\u0007c\u007fd‮e​f⁦g";
+  const root = tmpRepo({ ".sprintree.json": JSON.stringify({ project: "SPD", language, statuses: { "k\u0085": "v" } }) });
+  const h = harness(() => null, { env: {}, cwd: root });
+  assert.equal(await h.go(["config"]), 0);
+  const out = h.lines.join("\n");
+  assert.ok(!RAW_BAD.test(out), JSON.stringify(out));
+  assert.ok(out.includes("\\u009b31m") && out.includes("\\u007f") && out.includes("\\u0085"), out);
+  assert.equal(JSON.parse(out).language, "a\u009b31mb\u009d52;c;QQ==\u0007c\u007fdefg");
+});
+
+test("S1 bidi and zero-width characters are stripped from server text, tool names and error messages", async () => {
+  const h = harness(callResult({ content: [{ text: "a‮b​c⁦d‏e" }] }));
+  assert.equal(await h.go(["call", "x", "{}"]), 0);
+  assert.deepEqual(h.lines, ["abcde"]);
+  assert.equal(stripControls("x\u001b[2Jy‮z​"), "xyz");
+  const e = harness((b) => (b.method === "tools/call" ? { status: 500, text: "bo‮om" } : null));
+  await e.go(["call", "x", "{}"]);
+  assert.ok(!RAW_BAD.test(e.errs.join("")));
+});
+
+test("S3 doc files: a symlink (even to /dev/zero) is skipped with a warning and never read", { skip: win, timeout: 20000 }, async () => {
+  const root = tmpRepo({ "GEMINI.md": "https://sprintree.com/p/GEM" });
+  symlinkSync("/dev/zero", path.join(root, "AGENTS.md"));
+  const outside = tmpRepo({ "secret.md": "https://sprintree.com/p/LEAK" });
+  symlinkSync(path.join(outside, "secret.md"), path.join(root, "CLAUDE.md"));
+  const h = harness(() => null, { env: {}, cwd: root });
+  const t0 = Date.now();
+  assert.equal(await h.go(["key"]), 0);
+  assert.ok(Date.now() - t0 < 5000, "must not read the symlink target");
+  assert.deepEqual(h.lines, ["GEM"]);
+  assert.match(h.errs.join("\n"), /AGENTS\.md.*symlink/);
+  assert.match(h.errs.join("\n"), /CLAUDE\.md.*symlink/);
+});
+
+test("S3 a hard-linked or oversized doc file or .sprintree.json is refused", { skip: win }, async () => {
+  const outside = tmpRepo({ "real.md": "https://sprintree.com/p/LEAK", "real.json": '{"project":"LEAK"}' });
+  const root = tmpRepo({ "GEMINI.md": "https://sprintree.com/p/GEM" });
+  linkSync(path.join(outside, "real.md"), path.join(root, "AGENTS.md"));
+  const big = "x".repeat(1024 * 1024 + 10) + " https://sprintree.com/p/BIG";
+  writeFileSync(path.join(root, "CLAUDE.md"), big);
+  const h = harness(() => null, { env: {}, cwd: root });
+  assert.equal(await h.go(["key"]), 0);
+  assert.deepEqual(h.lines, ["GEM"]);
+  assert.match(h.errs.join("\n"), /AGENTS\.md.*hard link/);
+  assert.match(h.errs.join("\n"), /CLAUDE\.md.*larger/);
+  const hard = tmpRepo();
+  linkSync(path.join(outside, "real.json"), path.join(hard, ".sprintree.json"));
+  const a = harness(() => null, { env: {}, cwd: hard });
+  assert.equal(await a.go(["key"]), 1);
+  assert.match(a.errs[0], /hard link/);
+  const bigJson = tmpRepo({ ".sprintree.json": JSON.stringify({ project: "SPD", pad: "y".repeat(1024 * 1024 + 10) }) });
+  const b = harness(() => null, { env: {}, cwd: bigJson });
+  assert.equal(await b.go(["key"]), 1);
+  assert.match(b.errs[0], /larger/);
+});
+
+test("S3 doc files are decoded like .sprintree.json (UTF-8 BOM, UTF-16LE)", () => {
+  const link = "see https://sprintree.com/p/ABC";
+  assert.equal(resolveConfig(tmpRepo({ "AGENTS.md": Buffer.concat([BOM8, Buffer.from(link)]) })).project, "ABC");
+  assert.equal(resolveConfig(tmpRepo({ "AGENTS.md": utf16le(link) })).project, "ABC");
+});
+
+test("S4 containment is checked against the repo root: a subdirectory symlinked outside is refused", { skip: win }, () => {
+  const outside = tmpRepo({ "x/.sprintree.json": '{"project":"EVIL"}' });
+  const root = tmpRepo();
+  symlinkSync(path.join(outside, "x"), path.join(root, "sub"));
+  assert.throws(() => resolveConfig(path.join(root, "sub")), /outside/);
+  const ok = tmpRepo({ "sub/.sprintree.json": '{"project":"OKAY"}' });
+  assert.equal(resolveConfig(path.join(ok, "sub")).project, "OKAY");
+});
+
+test("S5 @file: only a regular file under the size limit, and a JSON error never echoes the file", { skip: win, timeout: 20000 }, async () => {
+  const dir = tmpRepo({ "bad.json": "root:x:0:0:SECRETLINE:/root:/bin/bash\n", "big.json": '{"a":"' + "z".repeat(1024 * 1024 + 10) + '"}' });
+  const bad = harness(okCall, { cwd: dir });
+  assert.equal(await bad.go(["call", "x", "@bad.json"]), 1);
+  assert.match(bad.errs[0], /not valid JSON/);
+  assert.ok(!/SECRETLINE|root:x/.test(bad.errs.join("")), bad.errs.join(""));
+  const inline = harness(okCall, { cwd: dir });
+  assert.equal(await inline.go(["call", "x", "root:x:0:0:SECRETLINE"]), 1);
+  assert.ok(!/SECRETLINE|root:x/.test(inline.errs.join("")), inline.errs.join(""));
+  const big = harness(okCall, { cwd: dir });
+  assert.equal(await big.go(["call", "x", "@big.json"]), 1);
+  assert.match(big.errs[0], /larger/);
+  const dev = harness(okCall, { cwd: dir });
+  const t0 = Date.now();
+  assert.equal(await dev.go(["call", "x", "@/dev/zero"]), 1);
+  assert.ok(Date.now() - t0 < 5000);
+  assert.match(dev.errs[0], /regular file/);
+  assert.equal(dev.fetch.calls.length, 0);
+});
+
+test("S6 tokens of all three families (itn_, itna_, itnr_) are redacted from server text, whether or not they are the configured one", async () => {
+  const body = "A1b-_".repeat(6);
+  for (const prefix of ["itn_", "itna_", "itnr_"]) {
+    const h = harness(callResult({ content: [{ text: `leak ${prefix}${body} end` }] }), { env: { SPRINTREE_TOKEN: "unrelated_token_000" } });
+    assert.equal(await h.go(["call", "x", "{}"]), 0);
+    assert.deepEqual(h.lines, ["leak [token] end"], prefix);
+  }
+  const other = harness(callResult({ content: [{ text: `itn_short and itnx_${body}` }] }));
+  await other.go(["call", "x", "{}"]);
+  assert.deepEqual(other.lines, [`itn_short and itnx_${body}`]);
+});
+
+test("S7 a host other than sprintree.com is named on stderr once, before the token goes there", async () => {
+  const other = harness(toolsList([]), { env: { SPRINTREE_TOKEN: TOKEN, SPRINTREE_MCP_URL: "https://mcp.example.test:8443/mcp" } });
+  assert.equal(await other.go(["tools"]), 0);
+  assert.equal(other.errs.length, 1);
+  assert.match(other.errs[0], /mcp\.example\.test:8443/);
+  assert.match(other.errs[0], /token/i);
+  assert.ok(!other.errs[0].includes(TOKEN));
+  const dflt = harness(toolsList([]));
+  assert.equal(await dflt.go(["tools"]), 0);
+  assert.deepEqual(dflt.errs, []);
+});
+
+test("L-err: a network error without a cause code shows a short scrubbed cause message", async () => {
+  const fetch = async () => {
+    throw new TypeError("fetch failed", { cause: new Error(`getaddrinfo ENOTFOUND mcp.example.test \u001b]52;c;QQ==\u0007${TOKEN} ${"x".repeat(500)}`) });
+  };
+  const errs = [];
+  const code = await run(["tools"], { fetch, env: { SPRINTREE_TOKEN: TOKEN }, out: () => {}, err: (s) => errs.push(s) });
+  assert.equal(code, 1);
+  assert.match(errs[0], /getaddrinfo ENOTFOUND/);
+  assert.ok(!RAW_BAD.test(errs[0]) && !errs[0].includes(TOKEN));
+  assert.ok(errs[0].length < 200, errs[0].length);
+  const none = [];
+  await run(["tools"], { fetch: async () => { throw new TypeError("fetch failed"); }, env: { SPRINTREE_TOKEN: TOKEN }, out: () => {}, err: (s) => none.push(s) });
+  assert.match(none[0], /unknown error/);
+});
+
+test("L-err: a refusal is still exit 1 when the server hides the Error: prefix behind control sequences", async () => {
+  for (const text of ["\u001b[0mError: nope", "\u001b]52;c;QQ==\u0007Error: nope", "​Error: nope", "\u009bError: nope"]) {
+    const h = harness(callResult({ content: [{ text }] }));
+    assert.equal(await h.go(["call", "x", "{}"]), 1, JSON.stringify(text));
+  }
+});
+
+test("L-key: findDocKey takes the first real link of all links, skipping the template placeholder", () => {
+  const root = tmpRepo({ "AGENTS.md": "Template: https://sprintree.com/p/KEY and then the board https://sprintree.com/p/abc/board" });
+  assert.deepEqual(findDocKey(root), { key: "ABC", file: path.join(root, "AGENTS.md") });
+  assert.equal(findDocKey(tmpRepo({ "AGENTS.md": "nothing here" })), null);
+  assert.throws(() => findDocKey(tmpRepo({ "AGENTS.md": "https://sprintree.com/p/KEY" })), /placeholder/);
+  // a placeholder in one file does not hide a real link in another
+  const two = tmpRepo({ "AGENTS.md": "https://sprintree.com/p/KEY", "CLAUDE.md": "https://sprintree.com/p/REAL" });
+  assert.equal(findDocKey(two).key, "REAL");
+});
+
+test("L-key: the project key from .sprintree.json is upper-cased like one from a link", async () => {
+  const root = tmpRepo({ ".sprintree.json": '{"project":"spd9"}' });
+  assert.equal(resolveConfig(root).project, "SPD9");
+  const h = harness(() => null, { env: {}, cwd: root });
+  await h.go(["key"]);
+  assert.deepEqual(h.lines, ["SPD9"]);
+});
+
+test("L-key: config redacts token-looking VALUES of known keys, and a token-looking key name is warned about once", async () => {
+  const tok = "itn_" + "Ab1-_".repeat(6);
+  const root = tmpRepo({ ".sprintree.json": JSON.stringify({ project: "SPD", statuses: { done: tok }, [tok]: "x" }) });
+  const h = harness(() => null, { env: {}, cwd: root });
+  assert.equal(await h.go(["config"]), 0);
+  const all = [...h.lines, ...h.errs].join("\n");
+  assert.ok(!all.includes(tok) && !all.includes("itn_Ab1"), all);
+  assert.match(h.lines.join("\n"), /\[token\]/);
+  const warned = h.errs.join("\n");
+  assert.match(warned, /statuses\.done/);
+  assert.equal(warned.split("[token]").length - 1, 1, warned); // the key name appears once (redacted), not in two lines
+});
+
+test("L-code: listTools returns the array and refuses a malformed answer", async () => {
+  assert.deepEqual(await listTools({ rpc: async (m) => (m === "tools/list" ? { tools: [{ name: "a" }] } : null) }), [{ name: "a" }]);
+  await assert.rejects(listTools({ rpc: async () => ({ tools: "nope" }) }), /tools/);
+  await assert.rejects(listTools({ rpc: async () => ({}) }), /tools/);
+});
+
+test("the example config file shows exactly the known config keys", () => {
+  const example = JSON.parse(readFileSync(path.join(ROOT, ".sprintree.example.json"), "utf8"));
+  assert.deepEqual(Object.keys(example).sort(), [...KNOWN_CONFIG_KEYS].sort());
+});
+
+test("MIN_NODE: the runtime check and its message are built from the one constant", async () => {
+  const p = MIN_NODE.split(".").map(Number);
+  let below = "0.0.0";
+  for (let i = 2; i >= 0; i--) if (p[i] > 0) { const q = [...p]; q[i]--; below = q.join("."); break; }
+  const errs = [];
+  const base = { env: { SPRINTREE_TOKEN: TOKEN }, out: () => {}, err: (s) => errs.push(s), fetch: mockFetch(server(toolsList([]))) };
+  assert.equal(await run(["tools"], { ...base, nodeVersion: below }), 1);
+  assert.ok(errs[0].includes(MIN_NODE) && errs[0].includes(below), errs[0]);
+  assert.equal(await run(["tools"], { ...base, nodeVersion: MIN_NODE }), 0);
+  assert.equal(await run(["tools"], { ...base, nodeVersion: "99.0.0" }), 0);
+});
+
+test("the `key` hint names every doc file that is read, .claude/CLAUDE.md included", async () => {
+  const h = harness(() => null, { env: {}, cwd: tmpRepo() });
+  assert.equal(await h.go(["key"]), 1);
+  for (const n of ["AGENTS.md", "CLAUDE.md", ".claude/CLAUDE.md", "GEMINI.md", ".sprintree.json"]) assert.ok(h.errs[0].includes(n), `${n} missing: ${h.errs[0]}`);
 });

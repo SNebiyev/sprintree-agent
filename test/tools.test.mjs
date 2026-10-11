@@ -1,16 +1,16 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { checkAll, checkText, buildSnapshot, refresh, SNAPSHOT, DOCS, ALLOW } from "../scripts/check-tools.mjs";
+import { ROOT, tmpDirs, reply, mockFetch, childEnv } from "../test-support/helpers.mjs";
 
 const snap = JSON.parse(readFileSync(SNAPSHOT, "utf8"));
 const CHECK_TOOLS = fileURLToPath(new URL("../scripts/check-tools.mjs", import.meta.url));
-const scratch = [];
-after(() => scratch.forEach((d) => rmSync(d, { recursive: true, force: true })));
+const scratch = tmpDirs();
+after(() => scratch.cleanup());
 
 test("every doc that names tools or arguments is checked against the live snapshot", () => {
   assert.deepEqual(checkAll(snap), []);
@@ -18,8 +18,19 @@ test("every doc that names tools or arguments is checked against the live snapsh
   assert.ok(DOCS.some((f) => /AGENTS\.md$/.test(f)), "the AGENTS.md template is not scanned");
 });
 
-test("the allow list only holds words the docs really need", () => {
-  assert.ok([...ALLOW].every((w) => ["section_titles", "bearer_token_env_var"].includes(w)), [...ALLOW].join(","));
+test("the allow list only holds words a doc really uses in backticks and the live server does not know", () => {
+  const docs = DOCS.map((f) => readFileSync(path.join(ROOT, f), "utf8")).join("\n");
+  const known = new Set(Object.keys(snap.tools));
+  for (const t of Object.values(snap.tools)) {
+    for (const [p, d] of Object.entries(t.properties)) {
+      known.add(p);
+      (d.enum ?? []).forEach((v) => known.add(String(v)));
+    }
+  }
+  for (const w of ALLOW) {
+    assert.ok(docs.includes("`" + w + "`"), `${w} is allow-listed but no doc has it in backticks`);
+    assert.ok(!known.has(w), `${w} is in the snapshot, so it does not need to be allow-listed`);
+  }
 });
 
 test("snapshot carries the tools the skill depends on", () => {
@@ -86,35 +97,56 @@ test("buildSnapshot keeps argument names and nested enums", () => {
 });
 
 test("refresh reads the live list through the shared client (initialize, initialized, tools/list) and writes the snapshot", async () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "ct-"));
-  scratch.push(dir);
-  const file = path.join(dir, "snap.json");
-  const methods = [];
-  const fetchImpl = async (url, init) => {
-    const b = JSON.parse(init.body);
-    methods.push(b.method);
-    const result = b.method === "tools/list" ? { tools: [{ name: "zeta_tool", inputSchema: { properties: { a: { enum: ["x"] } } } }] } : {};
-    const text = b.method === "tools/list" ? `event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: b.id, result })}\n\n` : JSON.stringify({ jsonrpc: "2.0", id: b.id, result });
-    return { ok: true, status: 200, headers: new Map(), text: async () => text };
-  };
+  const file = path.join(scratch.make("ct-"), "snap.json");
+  const fetchImpl = mockFetch((b) =>
+    b.method === "tools/list"
+      ? { sse: true, ...reply(b, { tools: [{ name: "zeta_tool", inputSchema: { properties: { a: { enum: ["x"] } } } }] }) }
+      : b.method === "initialize" ? reply(b, {}) : { text: "" }
+  );
   const n = await refresh({ fetchImpl, env: { SPRINTREE_TOKEN: "spt_fake_token_0000" }, file });
   assert.equal(n, 1);
-  assert.deepEqual(methods, ["initialize", "notifications/initialized", "tools/list"]);
+  assert.deepEqual(fetchImpl.calls.map((c) => c.body.method), ["initialize", "notifications/initialized", "tools/list"]);
   assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).tools.zeta_tool.properties.a.enum, ["x"]);
-});
-
-test("the checker runs when started through a symlink (it used to skip silently)", { skip: process.platform === "win32" }, () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "ct-"));
-  scratch.push(dir);
-  const link = path.join(dir, "link-check-tools.mjs");
-  symlinkSync(CHECK_TOOLS, link);
-  const r = spawnSync(process.execPath, [link], { encoding: "utf8" });
-  assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /tools consistent/);
+  await assert.rejects(refresh({ fetchImpl, env: {}, file }), /SPRINTREE_TOKEN/);
 });
 
 test("the checker prints and exits 0 when run directly", () => {
-  const r = spawnSync(process.execPath, [CHECK_TOOLS], { encoding: "utf8" });
+  const r = spawnSync(process.execPath, [CHECK_TOOLS], { encoding: "utf8", env: childEnv() });
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /tools consistent/);
+});
+
+test("C1 negative probe: an unknown argument of a KNOWN tool in the inline key:\"value\" form is reported", () => {
+  const p = checkText('Pull `search_issues` with `catgory:"todo"`.', snap);
+  assert.equal(p.length, 1);
+  assert.match(p[0], /search_issues has no argument "catgory"/);
+  assert.equal(checkText('call search_issues with catgory:"todo"', snap).length, 1);
+  // prose with no tool on the line stays unchecked
+  assert.deepEqual(checkText('the `.sprintree.json` has statuses:"x" in prose', snap), []);
+  assert.deepEqual(checkText('Pull `search_issues` with `category:"todo"`.', snap), []);
+});
+
+test("C1 negative probe: `st.mjs call|schema <name>` must name a tool of the snapshot", () => {
+  const bad = checkText("node <skill-dir>/scripts/st.mjs call search_issuez '{}'", snap);
+  assert.equal(bad.length, 1);
+  assert.match(bad[0], /search_issuez/);
+  assert.equal(checkText("node <skill-dir>/scripts/st.mjs schema create_issuee", snap).length, 1);
+  assert.deepEqual(checkText("node <skill-dir>/scripts/st.mjs schema create_issue", snap), []);
+  assert.deepEqual(checkText("node <skill-dir>/scripts/st.mjs call <tool> '<json>'", snap), []);
+  assert.deepEqual(checkText("node <skill-dir>/scripts/st.mjs tools | schema <tool> | call <tool> '<json>' | key | config", snap), []);
+});
+
+test("C1 JSON on a line without a tool name uses the last tool named earlier in the paragraph, else the union of all tools", () => {
+  const carry = checkText('Query `search_issues` with\n`{"project":"K","nope":1}`', snap);
+  assert.equal(carry.length, 1);
+  assert.match(carry[0], /search_issues has no argument "nope"/);
+  assert.deepEqual(checkText('Query `search_issues` with\n`{"project":"K","category":["todo"]}`', snap), []);
+  // a blank line ends the paragraph: no carried tool, the union applies
+  assert.equal(checkText('Query `search_issues`.\n\n`{"project":"K","catgory":"todo"}`', snap).length, 1);
+  assert.deepEqual(checkText('Query `search_issues`.\n\n`{"project":"K","category":["todo"],"depth":"all"}`', snap), []);
+  assert.equal(checkText('`{"category":"doing"}`', snap).length, 1);
+});
+
+test("C1 a ```json fenced block is a config example and is not checked as tool arguments", () => {
+  assert.deepEqual(checkText('```json\n{ "project": "KEY", "x": { "done": "shipped" } }\n```', snap), []);
 });

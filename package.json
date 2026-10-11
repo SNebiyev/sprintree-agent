@@ -5,10 +5,10 @@
   "type": "module",
   "private": true,
   "engines": {
-    "node": ">=18.14"
+    "node": ">=18.8.0"
   },
   "scripts": {
-    "test": "node --test test/st.test.mjs test/tools.test.mjs test/version.test.mjs test/lint-json.test.mjs",
+    "test": "node --test",
     "tools:refresh": "node scripts/check-tools.mjs --refresh"
   },
   "license": "MIT"

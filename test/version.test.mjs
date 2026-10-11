@@ -1,16 +1,14 @@
-import { test, after } from "node:test";
+import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { tmpdir } from "node:os";
-import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { collect, check } from "../scripts/check-version.mjs";
+import { MIN_NODE } from "../skills/sprintree/scripts/st.mjs";
+import { childEnv } from "../test-support/helpers.mjs";
 
 const CHECK_VERSION = fileURLToPath(new URL("../scripts/check-version.mjs", import.meta.url));
 const read = (f) => readFileSync(new URL(`../${f}`, import.meta.url), "utf8");
-const scratch = [];
-after(() => scratch.forEach((d) => rmSync(d, { recursive: true, force: true })));
 
 // This is the one place the version check runs (npm test no longer calls the script a second time).
 // On a tag build GITHUB_REF_TYPE/GITHUB_REF_NAME are in process.env, so the tag is checked as well.
@@ -29,24 +27,12 @@ test("a tag build must match the tag without v", () => {
   assert.equal(check(collect({ GITHUB_REF_TYPE: "tag", GITHUB_REF_NAME: "v9.9.9" })).length, 1);
 });
 
-test("engines.node is the oldest Node the client is tested on, and the README says so", () => {
-  const pkg = JSON.parse(read("package.json"));
-  assert.equal(pkg.engines.node, ">=18.14");
-  assert.match(read("README.md"), /18\.14/);
-});
-
-test("the script runs when started through a symlink (it used to skip silently)", { skip: process.platform === "win32" }, () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "cv-"));
-  scratch.push(dir);
-  const link = path.join(dir, "link-check-version.mjs");
-  symlinkSync(CHECK_VERSION, link);
-  const r = spawnSync(process.execPath, [link], { encoding: "utf8" });
-  assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /ok\s+package\.json = /);
+test("engines.node is exactly >=MIN_NODE of st.mjs", () => {
+  assert.equal(JSON.parse(read("package.json")).engines.node, `>=${MIN_NODE}`);
 });
 
 test("the script prints every source when run directly", () => {
-  const r = spawnSync(process.execPath, [CHECK_VERSION], { encoding: "utf8" });
+  const r = spawnSync(process.execPath, [CHECK_VERSION], { encoding: "utf8", env: childEnv() });
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /st\.mjs VERSION/);
 });

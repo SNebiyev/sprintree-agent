@@ -17,7 +17,7 @@ Model-independent.
    - `task`: sync, then claim and start the next To do card.
    - rule zero (nothing unverified on the board), never duplicate, epic > story > task, status by category,
      a card template, and the API traps.
-3. **`scripts/st.mjs`**, a dependency-free Node >= 18.14 MCP client for sessions where MCP is not connected.
+3. **`scripts/st.mjs`**, a dependency-free Node >= 18.8.0 MCP client for sessions where MCP is not connected.
 
 ## Install (one command per client)
 
@@ -50,7 +50,7 @@ git clone https://github.com/SNebiyev/sprintree-agent && cd sprintree-agent
 mkdir -p ~/.agents/skills && cp -r skills/sprintree ~/.agents/skills/   # Windows: copy the folder to %USERPROFILE%\.agents\skills
 ```
 
-Per repo, use `.agents/skills/sprintree` instead, and add `templates/AGENTS.md` from this repo to the
+Per repo, use `.agents/skills/sprintree/` (in the repo root) instead, and add `templates/AGENTS.md` from this repo to the
 repo's own `AGENTS.md`. Codex plugin packaging is documented by OpenAI but not verified here; see `docs/maintainers/RESEARCH.md`.
 
 ### Gemini CLI
@@ -94,23 +94,26 @@ once, in [SKILL.md, "Configuration"](skills/sprintree/SKILL.md#configuration-all
 
 ## The fallback client
 
-Needs Node >= 18.14 (`engines.node`). Use it only when the MCP tools are not available in the session. It is **PAT-only**: a connected
+Needs Node >= 18.8.0 (`engines.node`). Use it only when the MCP tools are not available in the session. It is **PAT-only**: a connected
 client's OAuth session is not visible to `st.mjs`, so export a token first.
 
 ```bash
 export SPRINTREE_TOKEN=...            # PowerShell: $env:SPRINTREE_TOKEN="..."
 node skills/sprintree/scripts/st.mjs tools
 node skills/sprintree/scripts/st.mjs call search_issues '{"project":"KEY","query":"cache","format":"text"}'
-echo '{"project":"KEY"}' | node skills/sprintree/scripts/st.mjs call list_statuses -   # JSON on stdin
+node skills/sprintree/scripts/st.mjs call list_statuses - < args.json   # JSON on stdin (args.json: {"project":"KEY"})
 node skills/sprintree/scripts/st.mjs version
 ```
 
-- The examples above assume a clone of this repo. Installed as a skill, the client is the skill's own `scripts/st.mjs`
-  (`~/.agents/skills/sprintree/`, `~/.gemini/extensions/sprintree/skills/sprintree/`, or the Claude Code plugin cache).
-- **Windows PowerShell 5.1** mangles quotes in inline JSON: use `call <tool> @args.json` or pipe into `call <tool> -`.
-  PS 5.1 also pipes and writes ASCII by default, which turns ə/ç/ş into `?`. Write the file with
-  `[IO.File]::WriteAllText($path, $json)` (UTF-8 without BOM), or set `$OutputEncoding = [Text.UTF8Encoding]::new($false)`
-  before piping into `call <tool> -`.
+- The examples above assume a clone of this repo. Installed as a skill, the client is the skill's own `scripts/st.mjs`:
+  `~/.agents/skills/sprintree/` (Codex, all repos) or `.agents/skills/sprintree/` (Codex, one repo),
+  `~/.gemini/extensions/sprintree/skills/sprintree/` (Gemini CLI), or `~/.claude/plugins/cache/sprintree/sprintree/<version>/skills/sprintree/` (Claude Code plugin cache).
+- The inline `'{...}'` examples are fixed JSON you wrote yourself. Text that comes from a card or a comment goes into a file
+  that your agent writes with its own file-writing tool, never via echo, printf or a heredoc (a quote or a line `EOF` in the
+  text would run the rest as shell), and is passed as `@args.json` or `< args.json`.
+- **Windows PowerShell 5.1** mangles quotes in inline JSON: use `call <tool> @args.json`. PS 5.1 also writes ASCII by default,
+  which turns ə/ç/ş into `?`. Write the file with `[IO.File]::WriteAllText("$PWD\args.json", $json)` (UTF-8 without BOM;
+  .NET resolves a bare file name against the process directory, not PowerShell's location, so spell out `$PWD`).
 - `SPRINTREE_TIMEOUT_MS`: per-request timeout, default 30000.
 - `SPRINTREE_MCP_URL`: override the server URL. It must be https (plain http only for localhost, 127.0.0.1, ::1).
 - `.sprintree.json` holds project settings only. It must not hold tokens.

@@ -42,8 +42,16 @@ task, follow the full `sprintree` skill if it is installed (its `SKILL.md`). The
 ## No MCP connection?
 
 First search your tool list for `sprintree`: some clients load MCP tools lazily. If there really are none,
-use the skill's `scripts/st.mjs` (`<skill-dir>/scripts/st.mjs`; it ships with the skill, not with your repo):
+use the skill's `scripts/st.mjs` (it ships with the skill, not with your repo):
 `node <skill-dir>/scripts/st.mjs tools | schema <tool> | call <tool> '<json>' | key | config`
-(Node >= 18.14, any OS). It needs a personal access token in `SPRINTREE_TOKEN`; create one in Sprintree under
-Settings -> API & MCP -> Personal access tokens (tokens start with `itn_`). Put any text you did not write
-yourself in a file (`call <tool> @args.json`) or pipe it (`call <tool> -`), never inside a quoted shell argument.
+(Node >= 18.8.0, any OS). `<skill-dir>` is the folder that holds the skill's `SKILL.md`:
+
+- Codex: `~/.agents/skills/sprintree/` (all repos) or `.agents/skills/sprintree/` (this repo only)
+- Gemini CLI: `~/.gemini/extensions/sprintree/skills/sprintree/`
+- Claude Code plugin: `~/.claude/plugins/cache/sprintree/sprintree/<version>/skills/sprintree/`
+- a clone of https://github.com/SNebiyev/sprintree-agent: `skills/sprintree/`
+
+Create a personal access token in Sprintree under Settings -> API & MCP -> Personal access tokens (tokens start with `itn_`) and export it as `SPRINTREE_TOKEN`.
+Inline `'<json>'` is only for JSON you wrote yourself. Text you did not write yourself (card titles,
+comments) goes into a file you write with your own file-writing tool, never via echo, printf or a heredoc,
+and is passed as `call <tool> @args.json` (or on stdin as `< args.json`).
