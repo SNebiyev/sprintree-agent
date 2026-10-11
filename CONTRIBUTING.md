@@ -2,19 +2,13 @@
 
 ## Tests
 
-`npm test` (Node >= 18.8.0, mocked `fetch`, no network) runs `node --test`, which discovers every `test/*.test.mjs` (add a file there and it runs; nothing lists them):
+`npm test` (Node >= 18.7.0, mocked `fetch`, no network) runs `node --test`, which discovers every `test/*.test.mjs` (add a file there and it runs; nothing lists them).
+The tests cover the fallback client, the doc-versus-snapshot tool check, the version check, the JSON manifests and the docs-versus-code checks.
 
-- `test/st.test.mjs` - the fallback client `skills/sprintree/scripts/st.mjs`.
-- `test/tools.test.mjs` - every tool, argument and enum value named in the docs exists in `test/tools.snapshot.json`
-  (`scripts/check-tools.mjs`).
-- `test/version.test.mjs` - one version everywhere (`scripts/check-version.mjs`; on a tag build the tag is checked too).
-- `test/lint-json.test.mjs` - every JSON file parses.
-- `test/docs.test.mjs` - the docs, the skill and the code agree (minimum Node, token text, task query, config example, no shell-pipe advice).
-
-`test-support/helpers.mjs` holds the shared mock `fetch` and temp-directory helpers. It lives outside `test/` because `node --test` runs every file inside a test directory.
+`test-support/helpers.mjs` holds the shared mock `fetch` and temp-directory helpers (temp directories are removed when the test process exits, because `node:test`'s `after` does not exist on the minimum Node). It lives outside `test/` because `node --test` runs every file inside a test directory.
 
 `npm run tools:refresh` rebuilds `test/tools.snapshot.json` from the live server (needs `SPRINTREE_TOKEN`, never runs in CI).
-CI (`.github/workflows/test.yml`) runs `npm test` on ubuntu, macos and windows with Node 18, 22 and 24.
+CI (`.github/workflows/test.yml`) runs `npm test` on ubuntu, macos and windows with Node 18.7.0, 22 and 24.
 
 ## The PCC gate
 

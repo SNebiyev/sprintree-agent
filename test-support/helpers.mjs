@@ -6,19 +6,21 @@ import { fileURLToPath } from "node:url";
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-/** Temp directories that one `cleanup()` (call it from `after`) removes again. */
-export function tmpDirs() {
-  const made = [];
-  return {
-    make(prefix = "sa-") {
-      const d = mkdtempSync(path.join(tmpdir(), prefix));
-      made.push(d);
-      return d;
-    },
-    cleanup() {
-      made.forEach((d) => rmSync(d, { recursive: true, force: true }));
-    },
-  };
+const made = [];
+let cleanupRegistered = false;
+
+/**
+ * A new temp directory, removed again when the test process exits. (Not `node:test`'s `after`: it does not
+ * exist before Node 18.17 and the minimum Node is older than that.)
+ */
+export function tmpDir(prefix = "sa-") {
+  if (!cleanupRegistered) {
+    cleanupRegistered = true;
+    process.on("exit", () => made.forEach((d) => rmSync(d, { recursive: true, force: true })));
+  }
+  const d = mkdtempSync(path.join(tmpdir(), prefix));
+  made.push(d);
+  return d;
 }
 
 /** A JSON-RPC success answer to request `b`. */

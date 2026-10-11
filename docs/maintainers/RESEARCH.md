@@ -62,4 +62,4 @@ Sources: https://geminicli.com/docs/extensions/, https://geminicli.com/docs/exte
 - `AGENTS.md` is the shared convention (Codex reads it natively; Claude Code reads `CLAUDE.md`, which can import `@AGENTS.md`; Gemini reads `GEMINI.md`/`contextFileName`).
   This repo ships a self-contained template `templates/AGENTS.md` (short rules plus a pointer to the full skill) and the extension's `GEMINI.md`.
 - Any MCP-capable agent: add `https://sprintree.com/mcp` as a Streamable HTTP server with OAuth, or a PAT bearer header.
-- No MCP at all: `skills/sprintree/scripts/st.mjs` speaks the same JSON-RPC over HTTP using only Node >= 18.14.
+- No MCP at all: `skills/sprintree/scripts/st.mjs` speaks the same JSON-RPC over HTTP using only Node >= 18.7.0.

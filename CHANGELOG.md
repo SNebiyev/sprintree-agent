@@ -9,14 +9,17 @@ version in the repo equal to the newest released heading below (`## [Unreleased]
 ## [0.1.0] - TBD
 
 - Generalised `sprintree` skill (sync and task modes, configurable language, typography, status mapping).
-- Cross-platform `st.mjs` client (Node >= 18.8.0, token from `SPRINTREE_TOKEN`).
+- Cross-platform `st.mjs` client (Node >= 18.7.0, token from `SPRINTREE_TOKEN`).
 - Packaging: Claude Code plugin + marketplace, Gemini CLI extension, Codex and generic `AGENTS.md`.
 - Fallback client hardening: timeouts (`SPRINTREE_TIMEOUT_MS`), https-only `SPRINTREE_MCP_URL` (a host other than sprintree.com is named on stderr),
-  `call <tool> -` (JSON on stdin), `version`.
-- Config hardening: `.sprintree.json` and the doc files (`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`) are read by one safe reader (regular file, at most 1 MB,
-  no symlink, no hard link, inside the repo root); `config` prints only the known keys; terminal escape sequences, bidi and zero-width characters
-  are stripped from everything printed and `itn_`, `itna_`, `itnr_` tokens are redacted.
+  `version`. Arguments are inline JSON or `@file` only (no stdin mode): text you did not write goes through a file outside the repo.
+- Config hardening: `.sprintree.json` and the doc files (`AGENTS.md`, `CLAUDE.md`, `.claude/CLAUDE.md`, `GEMINI.md`) are read by one safe reader
+  (a symlink is fine when its real target is a regular file of at most 1 MB inside the repo root, owned by you; no hard-linked `.sprintree.json`;
+  checked on the opened descriptor). Without a `.git` only the starting directory is read, and the search for `.git` stops at `$HOME`.
+  `config` prints only the known keys. Terminal escape sequences and invisible characters (bidi controls, zero-width space, word joiner, BOM,
+  tag characters, Hangul fillers) are stripped from everything printed, while ZWJ, ZWNJ, LRM, RLM and flag emoji survive; `itn_`, `itna_`, `itnr_`
+  tokens are redacted.
 - `templates/AGENTS.md`: instructions for any MCP agent, with the install location of the skill per client and the file-based way to pass text to `st.mjs`.
 - `.gitleaks.toml`: a rule for Sprintree tokens (`itn_`, `itna_`, `itnr_`).
 - Skill rules: untrusted card text, paging, `expect`, done gate, live-schema task pick.
-- Repo hygiene: CI matrix on Node 18.8.0/22/24, version check, SECURITY.md, PCC adapter, gitleaks.
+- Repo hygiene: CI matrix on Node 18.7.0/22/24, version check, SECURITY.md, PCC adapter, gitleaks.

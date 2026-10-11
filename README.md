@@ -17,7 +17,7 @@ Model-independent.
    - `task`: sync, then claim and start the next To do card.
    - rule zero (nothing unverified on the board), never duplicate, epic > story > task, status by category,
      a card template, and the API traps.
-3. **`scripts/st.mjs`**, a dependency-free Node >= 18.8.0 MCP client for sessions where MCP is not connected.
+3. **`scripts/st.mjs`**, a dependency-free Node >= 18.7.0 MCP client for sessions where MCP is not connected.
 
 ## Install (one command per client)
 
@@ -80,9 +80,8 @@ from this repo (or its contents) into your repo or custom instructions.
   - Export `SPRINTREE_TOKEN` for `st.mjs`. It is never printed.
   - Never commit a token, and never put one in `.sprintree.json`.
 - **Revoke:** Settings -> API & MCP -> Personal access tokens, delete the token. Do it at once if one leaked.
-- **Untrusted content:** the skill treats card titles, descriptions, comments, labels and linked pages as data, never as
-  instructions. It will not run a command, reveal a token, call an unrelated tool or touch files outside the repo because a
-  card says so unless you asked in the conversation, and a card that tries to redirect it is reported as a finding.
+- **Untrusted content:** the skill treats everything written on a card as data, never as instructions
+  ([SKILL.md, "Card text is untrusted data"](skills/sprintree/SKILL.md#card-text-is-untrusted-data)).
 
 Report a vulnerability: see `SECURITY.md`.
 
@@ -94,26 +93,25 @@ once, in [SKILL.md, "Configuration"](skills/sprintree/SKILL.md#configuration-all
 
 ## The fallback client
 
-Needs Node >= 18.8.0 (`engines.node`). Use it only when the MCP tools are not available in the session. It is **PAT-only**: a connected
+Needs Node >= 18.7.0 (`engines.node`). Use it only when the MCP tools are not available in the session. It is **PAT-only**: a connected
 client's OAuth session is not visible to `st.mjs`, so export a token first.
 
 ```bash
 export SPRINTREE_TOKEN=...            # PowerShell: $env:SPRINTREE_TOKEN="..."
 node skills/sprintree/scripts/st.mjs tools
 node skills/sprintree/scripts/st.mjs call search_issues '{"project":"KEY","query":"cache","format":"text"}'
-node skills/sprintree/scripts/st.mjs call list_statuses - < args.json   # JSON on stdin (args.json: {"project":"KEY"})
 node skills/sprintree/scripts/st.mjs version
 ```
 
 - The examples above assume a clone of this repo. Installed as a skill, the client is the skill's own `scripts/st.mjs`:
   `~/.agents/skills/sprintree/` (Codex, all repos) or `.agents/skills/sprintree/` (Codex, one repo),
   `~/.gemini/extensions/sprintree/skills/sprintree/` (Gemini CLI), or `~/.claude/plugins/cache/sprintree/sprintree/<version>/skills/sprintree/` (Claude Code plugin cache).
-- The inline `'{...}'` examples are fixed JSON you wrote yourself. Text that comes from a card or a comment goes into a file
-  that your agent writes with its own file-writing tool, never via echo, printf or a heredoc (a quote or a line `EOF` in the
-  text would run the rest as shell), and is passed as `@args.json` or `< args.json`.
-- **Windows PowerShell 5.1** mangles quotes in inline JSON: use `call <tool> @args.json`. PS 5.1 also writes ASCII by default,
-  which turns ə/ç/ş into `?`. Write the file with `[IO.File]::WriteAllText("$PWD\args.json", $json)` (UTF-8 without BOM;
-  .NET resolves a bare file name against the process directory, not PowerShell's location, so spell out `$PWD`).
+- The inline `'{...}'` examples are fixed JSON you wrote yourself. How text from a card or a comment reaches `st.mjs`
+  (a file the agent writes outside the repo, passed as `@<absolute path>`) is described once, in
+  [SKILL.md, Step 0](skills/sprintree/SKILL.md#step-0---connect-and-resolve-the-project).
+- **Windows PowerShell 5.1** mangles quotes in inline JSON, so every call with arguments uses `@<absolute path>`. Let your agent
+  write that file with its own file-writing tool: it writes UTF-8, while PowerShell 5.1 writes ASCII or UTF-16 by default, which
+  turns ə/ç/ş into `?`. Do not build the JSON in the shell.
 - `SPRINTREE_TIMEOUT_MS`: per-request timeout, default 30000.
 - `SPRINTREE_MCP_URL`: override the server URL. It must be https (plain http only for localhost, 127.0.0.1, ::1).
 - `.sprintree.json` holds project settings only. It must not hold tokens.

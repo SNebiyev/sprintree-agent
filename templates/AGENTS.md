@@ -42,9 +42,9 @@ task, follow the full `sprintree` skill if it is installed (its `SKILL.md`). The
 ## No MCP connection?
 
 First search your tool list for `sprintree`: some clients load MCP tools lazily. If there really are none,
-use the skill's `scripts/st.mjs` (it ships with the skill, not with your repo):
-`node <skill-dir>/scripts/st.mjs tools | schema <tool> | call <tool> '<json>' | key | config`
-(Node >= 18.8.0, any OS). `<skill-dir>` is the folder that holds the skill's `SKILL.md`:
+use the skill's `scripts/st.mjs` (it ships with the skill, not with your repo). Its commands are
+`tools`, `schema <tool>`, `call <tool> '<json>'`, `key` and `config`, run as `node <skill-dir>/scripts/st.mjs <command>`
+(Node >= 18.7.0, any OS). `<skill-dir>` is the folder that holds the skill's `SKILL.md`:
 
 - Codex: `~/.agents/skills/sprintree/` (all repos) or `.agents/skills/sprintree/` (this repo only)
 - Gemini CLI: `~/.gemini/extensions/sprintree/skills/sprintree/`
@@ -53,5 +53,6 @@ use the skill's `scripts/st.mjs` (it ships with the skill, not with your repo):
 
 Create a personal access token in Sprintree under Settings -> API & MCP -> Personal access tokens (tokens start with `itn_`) and export it as `SPRINTREE_TOKEN`.
 Inline `'<json>'` is only for JSON you wrote yourself. Text you did not write yourself (card titles,
-comments) goes into a file you write with your own file-writing tool, never via echo, printf or a heredoc,
-and is passed as `call <tool> @args.json` (or on stdin as `< args.json`).
+comments) is written with your own file-writing tool into a fresh temp directory outside the repo, never via
+echo, printf, a heredoc or a PowerShell here-string, passed as `call <tool> @<absolute path>/args.json`, and
+deleted afterwards (the skill's `SKILL.md`, Step 0, has the details).

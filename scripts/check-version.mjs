@@ -4,7 +4,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { isMainModule } from "../skills/sprintree/scripts/st.mjs";
+import { isMainModule, VERSION } from "../skills/sprintree/scripts/st.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (f) => readFileSync(path.join(ROOT, f), "utf8");
@@ -15,7 +15,7 @@ export function collect(env = process.env) {
     "package.json": versionOf("package.json"),
     ".claude-plugin/plugin.json": versionOf(".claude-plugin/plugin.json"),
     "gemini-extension.json": versionOf("gemini-extension.json"),
-    "st.mjs VERSION": read("skills/sprintree/scripts/st.mjs").match(/export const VERSION = "([^"]+)"/)?.[1],
+    "st.mjs VERSION": VERSION,
     "CHANGELOG.md": read("CHANGELOG.md").match(/^## \[(\d+\.\d+\.\d+[^\]]*)\]/m)?.[1],
   };
   if (env.GITHUB_REF_TYPE === "tag") found[`tag ${env.GITHUB_REF_NAME}`] = (env.GITHUB_REF_NAME || "").replace(/^v/, "");

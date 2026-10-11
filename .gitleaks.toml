@@ -1,5 +1,7 @@
 # Extends gitleaks' default rules with one for Sprintree tokens: personal access tokens start with `itn_`,
-# OAuth access and refresh tokens with `itna_` and `itnr_`. st.mjs redacts the same shapes from its output.
+# OAuth access and refresh tokens with `itna_` and `itnr_`. st.mjs redacts the same shapes from its output: a token
+# starts at the beginning of the text or after a character that is not a letter or digit (RE2 has no lookbehind,
+# so the match includes that character and `secretGroup` points at the token itself).
 title = "sprintree-agent"
 
 [extend]
@@ -8,5 +10,6 @@ useDefault = true
 [[rules]]
 id = "sprintree-token"
 description = "Sprintree personal access token or OAuth access/refresh token"
-regex = '''\bitn[ar]?_[A-Za-z0-9_-]{20,}'''
+regex = '''(?:^|[^A-Za-z0-9])(itn[ar]?_[A-Za-z0-9_-]{20,})'''
+secretGroup = 1
 keywords = ["itn_", "itna_", "itnr_"]

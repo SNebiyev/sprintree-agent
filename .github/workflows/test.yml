@@ -18,7 +18,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        node: ["18.8.0", 22, 24] # the first entry is MIN_NODE of st.mjs (a test keeps them equal)
+        node: ["18.7.0", 22, 24] # the 18.7.0 entry is MIN_NODE of st.mjs (a test checks that the matrix lists it)
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5

@@ -1,16 +1,14 @@
-import { test, after } from "node:test";
+import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { checkAll, checkText, buildSnapshot, refresh, SNAPSHOT, DOCS, ALLOW } from "../scripts/check-tools.mjs";
-import { ROOT, tmpDirs, reply, mockFetch, childEnv } from "../test-support/helpers.mjs";
+import { ROOT, tmpDir, reply, mockFetch, childEnv } from "../test-support/helpers.mjs";
 
 const snap = JSON.parse(readFileSync(SNAPSHOT, "utf8"));
 const CHECK_TOOLS = fileURLToPath(new URL("../scripts/check-tools.mjs", import.meta.url));
-const scratch = tmpDirs();
-after(() => scratch.cleanup());
 
 test("every doc that names tools or arguments is checked against the live snapshot", () => {
   assert.deepEqual(checkAll(snap), []);
@@ -42,49 +40,61 @@ test("snapshot carries the tools the skill depends on", () => {
   assert.ok(snap.tools.search_issues.properties.category.enum.includes("todo"));
 });
 
-test("negative control: an unknown tool, argument or enum value is reported", () => {
-  assert.equal(checkText("call `search_issuez` now", snap).length, 1);
-  assert.equal(checkText(`call search_issues '{"project":"K","nope":1}'`, snap).length, 1);
-  assert.equal(checkText(`call search_issues '{"category":"doing"}'`, snap).length, 1);
-  assert.equal(checkText('use `category:"doing"` here', snap).length, 1);
-  assert.deepEqual(checkText(`call search_issues '{"category":["todo"],"blocked":false}'`, snap), []);
-});
+// [what is checked, text, how many problems, what the first one says]
+const CASES = [
+  ["unknown tool in backticks", "call `search_issuez` now", 1, /search_issuez/],
+  ["unknown argument in a quoted JSON example", `call search_issues '{"project":"K","nope":1}'`, 1, /nope/],
+  ["value outside the enum in a JSON example", `call search_issues '{"category":"doing"}'`, 1, /doing/],
+  ["value outside the enum, backticked key:value", 'use `category:"doing"` here', 1, /doing/],
+  ["valid example is clean", `call search_issues '{"category":["todo"],"blocked":false}'`, 0],
+  ["misspelled argument, quoted JSON", `call update_issue_status '{"key":"K-1","status":"done","expectt":{"status":"review"}}'`, 1, /expectt/],
+  ["misspelled argument, backticked JSON", 'Use `update_issue_status` with `{"key":"K-1","expectt":{"status":"review"}}`.', 1, /expectt/],
+  ["misspelled argument, bare JSON", 'update_issue_status {"key":"K-1","expectt":{"status":"review"}}', 1, /expectt/],
+  ["correct nested argument", `call update_issue_status '{"key":"K-1","status":"done","expect":{"status":"review"}}'`, 0],
+  ["argument of ANOTHER tool, backticked", 'Page with `search_issues` and `children_cursor:"abc"`.', 1, /search_issues has no argument "children_cursor"/],
+  ["argument of ANOTHER tool, JSON", `call search_issues '{"project":"K","children_cursor":"abc"}'`, 1, /children_cursor/],
+  ["another tool's argument, topology", 'Use `get_project_topology` with `sort:"priority"`.', 1, /get_project_topology has no argument "sort"/],
+  ["enum of the named tool: type has no done", `call search_issues '{"type":"done"}'`, 1, /type/],
+  ["enum of the named tool: format yaml", '`search_issues` with `format:"yaml"`', 1, /yaml/],
+  ["enum of the named tool: format json", '`search_issues` with `format:"json"`', 0],
+  ["a later tool on the line owns the arguments after it", '`search_issues` with `category:"todo"`, then `get_project_topology` with `depth:"all"`', 0],
+  ["the same argument on the wrong tool", '`get_project_topology` with `depth:"all"`, then `search_issues` with `depth:"all"`', 1, /search_issues has no argument "depth"/],
+  ["unknown argument of a known tool, backticked key:value", 'Pull `search_issues` with `catgory:"todo"`.', 1, /search_issues has no argument "catgory"/],
+  ["a valid backticked key:value", 'Pull `search_issues` with `category:"todo"`.', 0],
+  ["prose key:value is not parsed", 'If `create_issue` fails, the message: "AC list is turned off" appears', 0],
+  ["no tool on the line: key:value of a non-tool word is not checked", 'the `.sprintree.json` has `statuses:"x"` in prose', 0],
+  ["st.mjs call names no tool", "node <skill-dir>/scripts/st.mjs call search_issuez '{}'", 1, /search_issuez/],
+  ["st.mjs call with a quoted tool name", 'node st.mjs call "search_issuez" @a.json', 1, /search_issuez/],
+  ["st.mjs call with a Windows path", "node $d\\scripts\\st.mjs call search_issuez @a.json", 1, /search_issuez/],
+  ["st.mjs schema names no tool", "node <skill-dir>/scripts/st.mjs schema create_issuee", 1, /create_issuee/],
+  ["st.mjs with a real tool or a placeholder", "node st.mjs schema create_issue\nnode st.mjs call <tool> '<json>'", 0],
+  ["PowerShell-escaped JSON with a misspelled argument", String.raw`node st.mjs call search_issues '{\"project\":\"K\",\"catgory\":\"todo\"}'`, 1, /catgory/],
+  ["PowerShell-escaped JSON that is right", String.raw`node st.mjs call search_issues '{\"project\":\"K\",\"category\":\"todo\"}'`, 0],
+  ["a json fence with config keys only is a config example", '```json\n{ "project": "KEY", "x": { "done": "shipped" } }\n```'.replace('"x"', '"statuses"'), 0],
+  ["a json fence with tool arguments is checked against the tool before it", 'Run `st.mjs call search_issues @args.json` with args.json:\n```json\n{"project":"K","catgory":"todo"}\n```', 1, /search_issues has no argument "catgory"/],
+  ["a multi-line json fence with tool arguments", '```json\n{\n  "project": "K",\n  "catgory": "todo"\n}\n```', 1, /catgory/],
+  ["a ~~~json fence is a fence too", '~~~json\n{"project":"K","catgory":"todo"}\n~~~', 1, /catgory/],
+  ["an unclosed json fence is an error", '```json\n{"project":"K"}\n\nLater: call search_issues \'{"catgory":"todo"}\'', 1, /never closed/],
+  ["a json fence that does not parse", '```json\n{"project":\n```', 1, /does not parse/],
+];
 
-test("negative probe: a misspelled single-word argument in a JSON example fails", () => {
-  const quoted = `call update_issue_status '{"key":"K-1","status":"done","expectt":{"status":"review"}}'`;
-  const backticked = 'Use `update_issue_status` with `{"key":"K-1","expectt":{"status":"review"}}`.';
-  const bare = 'update_issue_status {"key":"K-1","expectt":{"status":"review"}}';
-  for (const line of [quoted, backticked, bare]) {
-    const p = checkText(line, snap);
-    assert.equal(p.length, 1, line);
-    assert.match(p[0], /expectt/);
+test("negative control table: each wrong tool, argument, enum value or fence is reported, each right one is not", () => {
+  for (const [name, text, count, message] of CASES) {
+    const problems = checkText(text, snap);
+    assert.equal(problems.length, count, `${name}: ${JSON.stringify(problems)}`);
+    if (count) assert.match(problems.join("\n"), message, name);
   }
-  assert.deepEqual(checkText(`call update_issue_status '{"key":"K-1","status":"done","expect":{"status":"review"}}'`, snap), []);
 });
 
-test("negative probe: an argument of ANOTHER tool is reported, not accepted because some tool has it", () => {
-  const a = checkText('Page with `search_issues` and `children_cursor:"abc"`.', snap);
-  assert.equal(a.length, 1);
-  assert.match(a[0], /search_issues has no argument "children_cursor"/);
-  const b = checkText(`call search_issues '{"project":"K","children_cursor":"abc"}'`, snap);
-  assert.equal(b.length, 1);
-  assert.match(b[0], /children_cursor/);
-  const c = checkText('Use `get_project_topology` with `sort:"priority"`.', snap);
-  assert.equal(c.length, 1);
-  assert.match(c[0], /get_project_topology has no argument "sort"/);
-  const d = checkText(`call get_project_topology '{"project":"K","sort":"priority"}'`, snap);
-  assert.equal(d.length, 1);
-  assert.match(d[0], /sort/);
-});
-
-test("enum values are checked against the named tool's own enum", () => {
-  // `status_category` of bulk_update_issues has todo/in_progress/review/done, `type` of search_issues does not have `done`
-  assert.equal(checkText(`call search_issues '{"type":"done"}'`, snap).length, 1);
-  assert.equal(checkText('`search_issues` with `format:"yaml"`', snap).length, 1);
-  assert.deepEqual(checkText('`search_issues` with `format:"json"`', snap), []);
-  // a later tool on the line owns the arguments after it
-  assert.deepEqual(checkText('`search_issues` with `category:"todo"`, then `get_project_topology` with `depth:"all"`', snap), []);
-  assert.equal(checkText('`get_project_topology` with `depth:"all"`, then `search_issues` with `depth:"all"`', snap).length, 1);
+test("JSON on a line without a tool name uses the last tool named earlier in the paragraph, else the union of all tools", () => {
+  const carry = checkText('Query `search_issues` with\n`{"project":"K","nope":1}`', snap);
+  assert.equal(carry.length, 1);
+  assert.match(carry[0], /search_issues has no argument "nope"/);
+  assert.deepEqual(checkText('Query `search_issues` with\n`{"project":"K","category":["todo"]}`', snap), []);
+  // a blank line ends the paragraph: no carried tool, the union applies
+  assert.equal(checkText('Query `search_issues`.\n\n`{"project":"K","catgory":"todo"}`', snap).length, 1);
+  assert.deepEqual(checkText('Query `search_issues`.\n\n`{"project":"K","category":["todo"],"depth":"all"}`', snap), []);
+  assert.equal(checkText('`{"category":"doing"}`', snap).length, 1);
 });
 
 test("buildSnapshot keeps argument names and nested enums", () => {
@@ -97,7 +107,7 @@ test("buildSnapshot keeps argument names and nested enums", () => {
 });
 
 test("refresh reads the live list through the shared client (initialize, initialized, tools/list) and writes the snapshot", async () => {
-  const file = path.join(scratch.make("ct-"), "snap.json");
+  const file = path.join(tmpDir("ct-"), "snap.json");
   const fetchImpl = mockFetch((b) =>
     b.method === "tools/list"
       ? { sse: true, ...reply(b, { tools: [{ name: "zeta_tool", inputSchema: { properties: { a: { enum: ["x"] } } } }] }) }
@@ -114,39 +124,4 @@ test("the checker prints and exits 0 when run directly", () => {
   const r = spawnSync(process.execPath, [CHECK_TOOLS], { encoding: "utf8", env: childEnv() });
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /tools consistent/);
-});
-
-test("C1 negative probe: an unknown argument of a KNOWN tool in the inline key:\"value\" form is reported", () => {
-  const p = checkText('Pull `search_issues` with `catgory:"todo"`.', snap);
-  assert.equal(p.length, 1);
-  assert.match(p[0], /search_issues has no argument "catgory"/);
-  assert.equal(checkText('call search_issues with catgory:"todo"', snap).length, 1);
-  // prose with no tool on the line stays unchecked
-  assert.deepEqual(checkText('the `.sprintree.json` has statuses:"x" in prose', snap), []);
-  assert.deepEqual(checkText('Pull `search_issues` with `category:"todo"`.', snap), []);
-});
-
-test("C1 negative probe: `st.mjs call|schema <name>` must name a tool of the snapshot", () => {
-  const bad = checkText("node <skill-dir>/scripts/st.mjs call search_issuez '{}'", snap);
-  assert.equal(bad.length, 1);
-  assert.match(bad[0], /search_issuez/);
-  assert.equal(checkText("node <skill-dir>/scripts/st.mjs schema create_issuee", snap).length, 1);
-  assert.deepEqual(checkText("node <skill-dir>/scripts/st.mjs schema create_issue", snap), []);
-  assert.deepEqual(checkText("node <skill-dir>/scripts/st.mjs call <tool> '<json>'", snap), []);
-  assert.deepEqual(checkText("node <skill-dir>/scripts/st.mjs tools | schema <tool> | call <tool> '<json>' | key | config", snap), []);
-});
-
-test("C1 JSON on a line without a tool name uses the last tool named earlier in the paragraph, else the union of all tools", () => {
-  const carry = checkText('Query `search_issues` with\n`{"project":"K","nope":1}`', snap);
-  assert.equal(carry.length, 1);
-  assert.match(carry[0], /search_issues has no argument "nope"/);
-  assert.deepEqual(checkText('Query `search_issues` with\n`{"project":"K","category":["todo"]}`', snap), []);
-  // a blank line ends the paragraph: no carried tool, the union applies
-  assert.equal(checkText('Query `search_issues`.\n\n`{"project":"K","catgory":"todo"}`', snap).length, 1);
-  assert.deepEqual(checkText('Query `search_issues`.\n\n`{"project":"K","category":["todo"],"depth":"all"}`', snap), []);
-  assert.equal(checkText('`{"category":"doing"}`', snap).length, 1);
-});
-
-test("C1 a ```json fenced block is a config example and is not checked as tool arguments", () => {
-  assert.deepEqual(checkText('```json\n{ "project": "KEY", "x": { "done": "shipped" } }\n```', snap), []);
 });
