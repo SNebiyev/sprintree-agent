@@ -20,18 +20,13 @@
  * Text from a card or a comment is never typed into the shell: write it with the agent's own file-writing tool
  * into a fresh temp directory outside the repo, pass `@<absolute path>`, delete it afterwards (SKILL.md, Step 0).
  *
- * `.sprintree.json` and the doc files (AGENTS.md, CLAUDE.md, .claude/CLAUDE.md, GEMINI.md) are read by one
- * safe reader: the real path (a symlink is followed) must be a regular file of at most 1 MB inside the repo root
- * (the directory holding .git, found without going above $HOME; without a .git only the starting directory is
- * read), owned by the current user on POSIX, and `.sprintree.json` must not be hard-linked. The file is opened
- * by its real path with O_NOFOLLOW/O_NONBLOCK where the OS has them and the opened descriptor must be the same
- * file (dev and ino) as that path, so a swap between the check and the open cannot redirect the read.
- * `config` prints only project, language, typography, statuses and section_titles (other keys are named
- * on stderr as ignored, their values are never printed); a key that looks like a token only warns, it does
- * not make the file safe to commit secrets in. Everything printed (server text, config, warnings, errors)
- * is stripped of terminal control sequences and invisible format characters first (zero-width joiner and
- * non-joiner, LRM and RLM stay, they are part of real text), and Sprintree tokens (itn_, itna_, itnr_) are
- * replaced by [token].
+ * `.sprintree.json` and the doc files (AGENTS.md, CLAUDE.md, .claude/CLAUDE.md, GEMINI.md) are read by one safe
+ * reader, `readTextFile`. `config` prints only project, language, typography, statuses and section_titles (other
+ * keys are named on stderr as ignored, their values are never printed); a key that looks like a token only warns,
+ * it does not make the file safe to commit secrets in. Everything printed (server text, config, warnings, errors)
+ * is stripped of terminal control sequences and invisible characters first (`stripControls`: ZWJ, ZWNJ, LRM, RLM,
+ * a variation selector after a base character and the three subdivision flags stay, they are part of real text),
+ * and Sprintree tokens (itn_, itna_, itnr_, also percent-encoded or \u-escaped) are replaced by [token].
  *
  * OAuth: this fallback client is PAT-only on purpose. When an agent connects the Sprintree MCP
  * server with OAuth, that session (access/refresh tokens) lives in the agent's own keychain and
@@ -43,7 +38,7 @@
  * A refusal (HTTP error, JSON-RPC error, isError, or a text answer starting with "Error:")
  * exits 1, so a failed write is never read as success.
  */
-import { existsSync, statSync, realpathSync, readlinkSync, readFileSync, openSync, fstatSync, closeSync, constants as FS_CONSTANTS } from "node:fs";
+import { existsSync, statSync, realpathSync, readlinkSync, readSync, openSync, fstatSync, closeSync, constants as FS_CONSTANTS } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -58,7 +53,8 @@ const DEFAULT_URL = "https://sprintree.com/mcp";
 const DEFAULT_TIMEOUT_MS = 30000;
 const MAX_TIMEOUT_MS = 600000;
 const PROTOCOL_VERSION = "2025-06-18";
-const REAL_FS = { existsSync, statSync, realpathSync, readlinkSync, readFileSync, openSync, fstatSync, closeSync, constants: FS_CONSTANTS };
+// realpathSync.native: on Windows it also expands 8.3 short names, so two spellings of one directory compare equal.
+const REAL_FS = { existsSync, statSync, realpathSync: realpathSync.native, readlinkSync, readSync, openSync, fstatSync, closeSync, constants: FS_CONSTANTS };
 const MAX_TEXT_BYTES = 1024 * 1024; // config and doc files are small; anything bigger is not one
 // The server's project key rule. Doc links and `.sprintree.json` are both checked against it.
 const KEY_CHARS = "[A-Za-z][A-Za-z0-9]{0,9}";
@@ -78,28 +74,43 @@ function decodeText(b, label) {
   return b.toString("utf8");
 }
 
+/** True when the relative path `rel` (from `path.relative`) leaves its base: it goes up, or it is on another drive. */
+const leaves = (p, rel) => rel === ".." || rel.startsWith(".." + p.sep) || p.isAbsolute(rel);
+/** The uid of this process, or null where there is none (Windows). */
+const currentUid = () => (typeof process.getuid === "function" ? process.getuid() : null);
+
 /**
- * The directory holding .git at or above `dir` (the repo root), or null. The search never goes above $HOME
- * (the home directory itself is looked at), so a stray ~/../.git or /tmp/.git is not a repo root.
+ * The directory holding .git at or above `dir` (the repo root), or null. Inside $HOME the search goes up to $HOME
+ * (the home directory itself is looked at). Outside $HOME a .git counts only when the current user owns it (POSIX),
+ * so a .git planted in /tmp or a shared folder is no repo root; where there is no uid (Windows) only `dir` itself is
+ * looked at there. Paths are compared as real paths (on Windows without regard to case).
  */
-function repoRoot(dir, { path: p = path, fs = REAL_FS, home = homedir() } = {}) {
-  const stop = home ? p.resolve(home) : null;
-  for (let cur = p.resolve(dir); ; ) {
-    if (fs.existsSync(p.join(cur, ".git"))) return cur;
+export function repoRoot(dir, { path: p = path, fs = REAL_FS, home = homedir() } = {}) {
+  const real = (x) => {
+    try {
+      return fs.realpathSync(x);
+    } catch {
+      return x;
+    }
+  };
+  const start = p.resolve(dir);
+  const homeReal = home ? real(p.resolve(home)) : null;
+  const inHome = homeReal !== null && !leaves(p, p.relative(homeReal, real(start)));
+  const uid = currentUid();
+  for (let cur = start; ; ) {
+    const git = p.join(cur, ".git");
+    if (fs.existsSync(git) && (inHome || uid === null || fs.statSync(git).uid === uid)) return cur;
     const up = p.dirname(cur);
-    if (cur === stop || up === cur) return null;
+    if (up === cur || (inHome ? p.relative(real(cur), homeReal) === "" : uid === null)) return null;
     cur = up;
   }
 }
 
 /**
- * `dir` and its parents up to the repo root. Without a repo root (no .git up to $HOME) only `dir` itself is
- * yielded: a config in some parent directory (another user's /tmp, a shared folder) is never picked up.
- * opts: { path, fs, root (already computed: the repo root or null) }.
+ * `dir` and its parents up to `root` (the repo root, or null). Without a repo root only `dir` itself is yielded:
+ * a config in some parent directory (another user's /tmp, a shared folder) is never picked up.
  */
-export function* ancestors(dir, opts = {}) {
-  const p = opts.path ?? path;
-  const root = "root" in opts ? opts.root : repoRoot(dir, opts);
+export function* ancestors(dir, root, p = path) {
   let cur = p.resolve(dir);
   yield cur;
   while (root !== null && cur !== root) {
@@ -140,20 +151,22 @@ function checkProjectKey(key, where) {
 
 /**
  * Read one local text file safely and decode it (UTF-8 BOM, UTF-16LE). Returns null when it does not exist.
- * The real path (a symlink is followed) must be a regular file of at most 1 MB. The file is opened by that real
- * path (O_NOFOLLOW and O_NONBLOCK where the OS has them, so a swapped-in symlink or FIFO is not followed or
- * waited on). Then the place of the opened file is checked again (on Linux from the descriptor itself, elsewhere
- * by resolving the path again) and must be the same file (dev and ino), so a parent directory swapped for a
- * link between the check and the open is caught (best effort where the OS cannot name an open file's path).
- * With `contain` (a directory: config and doc files) both places must lie inside it and, on POSIX, the file
- * must belong to the current user; `noHardLink` refuses a file with several hard links. Without `contain` (the
- * explicit `@file` argument) any regular file is fine.
+ * The real path (a symlink is followed) must be a regular file, checked before anything is opened. The file is opened
+ * by that real path (O_NOFOLLOW and O_NONBLOCK where the OS has them, so a swapped-in symlink or FIFO is not followed or
+ * waited on). Then the place of the opened file is checked again (on Linux from the descriptor itself, elsewhere by
+ * resolving the path again) and must be the same file (dev and ino), so a parent directory swapped for a link between
+ * the check and the open is caught (best effort where the OS cannot name an open file's path). At most 1 MB is read:
+ * a longer file is refused, whatever size it reports (a procfs file reports 0).
+ * With `contain` (a directory: config and doc files) both places must lie inside it and, on POSIX, the file must belong
+ * to the current user; `noHardLink` refuses a file with several hard links. Without `contain` (the explicit `@file`
+ * argument) any regular file is fine.
  */
 function readTextFile(f, fs, { contain = null, noHardLink = false, path: p = path } = {}) {
+  let box; // the real path of `contain`, resolved on first use: a missing directory must stay an error of the file lookup
   const inside = (real) => {
     if (contain) {
-      const rel = p.relative(fs.realpathSync(contain), real);
-      if (rel === ".." || rel.startsWith(".." + p.sep) || p.isAbsolute(rel)) throw new Error(`${f}: resolves outside the repo it was found in`);
+      box ??= fs.realpathSync(contain);
+      if (leaves(p, p.relative(box, real))) throw new Error(`${f}: resolves outside the repo it was found in`);
     }
     return real;
   };
@@ -164,23 +177,31 @@ function readTextFile(f, fs, { contain = null, noHardLink = false, path: p = pat
     if (e?.code === "ENOENT" || e?.code === "ENOTDIR") return null;
     throw e;
   }
+  if (!fs.statSync(real).isFile()) throw new Error(`${f}: not a regular file`);
   const { O_RDONLY, O_NOFOLLOW = 0, O_NONBLOCK = 0 } = fs.constants;
   const fd = fs.openSync(real, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
   try {
     const st = fs.fstatSync(fd);
-    let where;
-    try {
-      where = fs.readlinkSync(`/proc/self/fd/${fd}`);
-    } catch {
-      where = fs.realpathSync(f);
+    let where = null;
+    if (process.platform === "linux") {
+      try {
+        where = fs.readlinkSync(`/proc/self/fd/${fd}`);
+      } catch (e) {
+        if (!e?.code) throw e; // no procfs: resolve the path again below
+      }
     }
-    const at = fs.statSync(inside(where));
+    const at = fs.statSync(inside(where ?? fs.realpathSync(f)));
     if (!st.isFile()) throw new Error(`${f}: not a regular file`);
     if (st.dev !== at.dev || st.ino !== at.ino) throw new Error(`${f}: changed while it was being opened`);
-    if (st.size > MAX_TEXT_BYTES) throw new Error(`${f}: larger than 1 MB`);
     if (noHardLink && st.nlink > 1) throw new Error(`${f}: more than one hard link`);
-    if (contain && typeof process.getuid === "function" && st.uid !== process.getuid()) throw new Error(`${f}: not owned by the current user`);
-    return decodeText(fs.readFileSync(fd), f);
+    const uid = currentUid();
+    if (contain && uid !== null && st.uid !== uid) throw new Error(`${f}: not owned by the current user`);
+    const buf = Buffer.alloc(MAX_TEXT_BYTES + 1);
+    let n = 0;
+    let got;
+    while (n < buf.length && (got = fs.readSync(fd, buf, n, buf.length - n, null)) > 0) n += got;
+    if (n > MAX_TEXT_BYTES) throw new Error(`${f}: larger than 1 MB`);
+    return decodeText(buf.subarray(0, n), f);
   } finally {
     fs.closeSync(fd);
   }
@@ -204,14 +225,14 @@ function readConfigFile(f, root, dir, fs, p) {
  * The project key from a `sprintree.com/p/<KEY>` link in a doc file, nearest directory first: every link of a file is
  * looked at, the template placeholder (`.../p/KEY`) is skipped. Returns { key (upper-case), file } or null. A doc file
  * that is refused (outside the repo, not a regular file, too large, UTF-16BE) is skipped with a warning, never read.
- * Throws only when the placeholder is the sole link found. opts: { path, fs, root, warn(line) }.
+ * Throws only when the placeholder is the sole link found. opts: { path, fs, home, root (the repo root, already computed), warn(line) }.
  */
 export function findDocKey(dir, opts = {}) {
   const p = opts.path ?? path;
   const fs = opts.fs ?? REAL_FS;
-  const root = "root" in opts ? opts.root : repoRoot(dir, { path: p, fs });
+  const root = "root" in opts ? opts.root : repoRoot(dir, opts);
   let placeholderIn = null;
-  for (const d of ancestors(dir, { path: p, root })) {
+  for (const d of ancestors(dir, root, p)) {
     for (const name of DOC_FILES) {
       const f = p.join(d, name);
       let text;
@@ -238,16 +259,16 @@ export function findDocKey(dir, opts = {}) {
 /**
  * Project config: `.sprintree.json` (nearest wins), then a `sprintree.com/p/<KEY>` link in a doc file.
  * Only the known keys are returned. opts: { path (default node:path, pass path.win32 to test Windows
- * paths), fs, warn(line) }. warn gets the lines as they are: the caller makes them printable.
+ * paths), fs, home (default: the home directory), warn(line) }. warn gets the lines as they are: the caller makes them printable.
  */
 export function resolveConfig(dir, opts = {}) {
   const p = opts.path ?? path;
   const fs = opts.fs ?? REAL_FS;
   const warn = opts.warn ?? null;
-  const root = repoRoot(dir, { path: p, fs });
+  const root = repoRoot(dir, opts);
   const config = {};
   let source = null;
-  for (const d of ancestors(dir, { path: p, root })) {
+  for (const d of ancestors(dir, root, p)) {
     const f = p.join(d, ".sprintree.json");
     const parsed = readConfigFile(f, root, d, fs, p);
     if (!parsed) continue;
@@ -286,16 +307,15 @@ export function checkMcpUrl(raw) {
   try {
     u = new URL(raw);
   } catch {
-    // shown without a user:password@ part (everything up to the last @ goes, the scheme stays)
-    const at = raw.lastIndexOf("@");
-    const shown = at < 0 ? raw : (/^[a-z][a-z0-9+.-]*:?\/*/i.exec(raw)?.[0] ?? "") + raw.slice(at + 1);
-    throw new Error(`SPRINTREE_MCP_URL is not a valid URL: ${shown}`);
+    // Not shown at all: the text may hold a password (user:password@host or a key in the query).
+    throw new Error("SPRINTREE_MCP_URL is not a valid URL: [invalid URL] (the value is not echoed, it may hold a password)");
   }
   const host = u.hostname.replace(/^\[|\]$/g, "");
   const local = host === "localhost" || host === "127.0.0.1" || host === "::1";
   if (u.protocol === "https:" || (u.protocol === "http:" && local)) return u.href;
+  // scheme://host/path only: no user:password@ and no query
   throw new Error(
-    `SPRINTREE_MCP_URL must be https (plain http is only allowed for localhost, 127.0.0.1 and ::1), got ${u.protocol}//${u.host}`
+    `SPRINTREE_MCP_URL must be https (plain http is only allowed for localhost, 127.0.0.1 and ::1), got ${u.protocol}//${u.host}${u.pathname}`
   );
 }
 
@@ -351,29 +371,89 @@ function authHeader(env) {
 // Terminal control sequences a hostile server (or a hostile config file name) could send. Every ESC sequence loses
 // its introducer (OSC 52 writes the clipboard, and so do the C1 forms, which CONTROL_RE removes), and the payload
 // of a string sequence stays visible as plain text: an unterminated OSC/DCS/APC/PM/SOS must never swallow the text
-// after it. Every other C0/C1 control except \n and \t goes too, and so do the invisible characters that make text
-// read differently from what it is: format characters (Cf: bidi controls, zero-width space, word joiner, BOM,
-// tag characters, ...), U+180E and the Hangul fillers. The characters real text needs stay: ZWJ U+200D (emoji
-// sequences), ZWNJ U+200C (Persian), LRM U+200E, RLM U+200F, and the tag characters of an emoji flag sequence
-// (U+1F3F4, a region or subdivision code, U+E007F).
+// after it. Every other C0/C1 control except \n and \t goes too, and so do the characters that make text read
+// differently from what it is (HIDDEN): format characters (Cf: bidi controls, zero-width space, word joiner, BOM,
+// soft hyphen), tag characters, variation selectors, and the fillers that print as nothing (Hangul, Khmer, U+034F,
+// Egyptian hieroglyph format controls). U+2028, U+2029 and U+2800 become a space. What real text needs stays:
+//   - ZWJ U+200D (emoji sequences), ZWNJ U+200C (Persian), LRM U+200E, RLM U+200F;
+//   - ONE variation selector VS1-16 (U+FE00-FE0F) directly after a visible base character (an emoji presentation
+//     selector), and one VS17-256 (U+E0100-E01EF) directly after a CJK ideograph; a run, a leading one or one after
+//     another format character is removed;
+//   - the tag characters of the three subdivision flags (England, Scotland, Wales): U+1F3F4, a tag code, U+E007F.
+// Every other tag character is removed: a fake flag can spell a command with them.
+const HIDDEN = String.raw`\p{Cf}\u{e0000}-\u{e007f}\ufe00-\ufe0f\u{e0100}-\u{e01ef}\u034f\u115f\u1160\u17b4\u17b5\u3164\uffa0\u{13430}-\u{1343f}`;
+const VS = String.raw`\ufe00-\ufe0f\u{e0100}-\u{e01ef}`;
+const CJK = String.raw`\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u{20000}-\u{2a6df}\u{2a700}-\u{2b81f}\u{2b820}-\u{2ceaf}\u{2ceb0}-\u{2ebef}\u{2f800}-\u{2fa1f}\u{30000}-\u{323af}`;
+const FLAG = String.raw`\u{1f3f4}\u{e0067}\u{e0062}(?:\u{e0065}\u{e006e}\u{e0067}|\u{e0073}\u{e0063}\u{e0074}|\u{e0077}\u{e006c}\u{e0073})\u{e007f}`;
+const BASE = String.raw`[^\p{Z}\p{Cc}\p{M}\u2800${HIDDEN}]`;
 const ESC_SEQ_RE = /\u001b(?:\[[0-?]*[ -/]*[@-~]?|[ -/]*[0-~]?)/g;
 const CONTROL_RE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g;
-const INVISIBLE_RE = /(\u{1f3f4}[\u{e0030}-\u{e0039}\u{e0061}-\u{e007a}]{2,6}\u{e007f})|[\p{Cf}\u180e\u115f\u1160\u3164]/gu;
-const KEPT_FORMAT = new Set([0x200c, 0x200d, 0x200e, 0x200f]);
+const INVISIBLE_RE = new RegExp(
+  `(${FLAG}|[\\u200c-\\u200f]|(?<=${BASE})[\\ufe00-\\ufe0f](?![${VS}])|(?<=[${CJK}])[\\u{e0100}-\\u{e01ef}](?![${VS}]))|[\\u2028\\u2029\\u2800]|[${HIDDEN}]`,
+  "gu"
+);
+const HIDDEN_RE = new RegExp(`[${HIDDEN}]`, "gu");
+const HIDDEN_ONE_RE = new RegExp(`^[${HIDDEN}]$`, "u");
 
 /** Text made safe to print on a terminal: control sequences and invisible characters removed (ESC sequences first, so one cannot be split). */
 export function stripControls(text) {
   return String(text)
     .replace(ESC_SEQ_RE, "")
     .replace(CONTROL_RE, "")
-    .replace(INVISIBLE_RE, (m, flag) => flag ?? (KEPT_FORMAT.has(m.codePointAt(0)) ? m : ""));
+    .replace(INVISIBLE_RE, (m, kept) => kept ?? (m === "\u2028" || m === "\u2029" || m === "\u2800" ? " " : ""));
 }
+
+/** `text` as it reads to a person: with every character of HIDDEN left out, the kept ones (ZWJ, a variation selector, ...) too. */
+const readable = (text) => text.replace(HIDDEN_RE, "");
+
+// A token can be hidden in text in three ways: by characters that print as nothing (the kept ZWJ, ZWNJ, LRM, RLM, a
+// variation selector, flag tags), percent-encoded (`Bearer%20itn%5F...`) or written as a `\u005f` escape. gitleaks
+// decodes the last two (recursively, up to 5 levels), so redaction looks at a view of the text: HIDDEN characters left
+// out, ASCII escapes decoded. Every match is mapped back to the text it came from and replaced there.
+const ESCAPE_RE = /%([0-7][0-9a-fA-F])|\\{1,2}[uU]00([0-7][0-9a-fA-F])/g;
+const MAX_DECODE_DEPTH = 5;
 
 /** The configured token and anything shaped like a Sprintree token (itn_, itna_, itnr_) replaced by [token]. */
 function redact(text, env) {
-  const t = (env.SPRINTREE_TOKEN || "").trim().replace(/^Bearer\s+/i, "");
-  const clean = t && t.length >= 6 ? String(text).split(t).join("[token]") : String(text);
-  return clean.replace(TOKEN_RE_ALL, "[token]");
+  text = String(text);
+  const mine = (env.SPRINTREE_TOKEN || "").trim().replace(/^Bearer\s+/i, "");
+  const re = mine.length >= 6 ? new RegExp(`${mine.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}|${TOKEN_SRC}`, "g") : TOKEN_RE_ALL;
+  let view = ""; // from[i] and to[i]: the part of `text` that view character i stands for
+  let from = [];
+  let to = [];
+  for (const m of text.matchAll(/[^]/gu)) {
+    if (HIDDEN_ONE_RE.test(m[0])) continue;
+    for (let i = 0; i < m[0].length; i++) (from.push(m.index), to.push(m.index + m[0].length));
+    view += m[0];
+  }
+  for (let depth = 0; depth < MAX_DECODE_DEPTH; depth++) {
+    const escapes = [...view.matchAll(ESCAPE_RE)];
+    if (!escapes.length) break;
+    let next = "";
+    const f2 = [];
+    const t2 = [];
+    let at = 0;
+    const copyTo = (end) => {
+      next += view.slice(at, end);
+      for (let i = at; i < end; i++) (f2.push(from[i]), t2.push(to[i]));
+    };
+    for (const m of escapes) {
+      copyTo(m.index);
+      next += String.fromCharCode(parseInt(m[1] ?? m[2], 16));
+      f2.push(from[m.index]);
+      t2.push(to[m.index + m[0].length - 1]);
+      at = m.index + m[0].length;
+    }
+    copyTo(view.length);
+    [view, from, to] = [next, f2, t2];
+  }
+  let out = "";
+  let at = 0;
+  for (const m of view.matchAll(re)) {
+    out += text.slice(at, from[m.index]) + "[token]";
+    at = to[m.index + m[0].length - 1];
+  }
+  return out + text.slice(at);
 }
 
 /** Everything that is printed goes through this: control sequences first (so they cannot split the token), then the token. */
@@ -381,7 +461,7 @@ function scrub(text, env) {
   return redact(stripControls(text), env);
 }
 
-/** `v` ("18.20.8") >= `min` ("18.7.0"), compared part by part. */
+/** `v` ("20.1.0") >= `min` ("18.7.0"), compared part by part. */
 function nodeAtLeast(v, min) {
   const a = String(v).split(".").map(Number);
   const b = min.split(".").map(Number);
@@ -423,7 +503,7 @@ export function makeClient({ fetchImpl, env, warn }) {
   const { host, hostname } = new URL(url);
   const auth = authHeader(env);
   const ms = timeoutMs(env);
-  if (hostname.toLowerCase() !== "sprintree.com") warn?.(`Note: your SPRINTREE_TOKEN is sent to ${host} (SPRINTREE_MCP_URL), not to sprintree.com`);
+  if (hostname !== "sprintree.com") warn?.(`Note: your SPRINTREE_TOKEN is sent to ${host} (SPRINTREE_MCP_URL), not to sprintree.com`);
   const excerpt = (text, n) => scrub(text, env).trim().slice(0, n);
   let sid = null;
   let protocol = null;
@@ -569,7 +649,7 @@ export async function run(argv, deps = {}) {
     // Each item is cleaned on its own, then joined. Sprintree reports refusals as normal content starting with "Error:", in any item.
     const texts = (Array.isArray(result?.content) ? result.content : []).map((c) => scrub(c?.text ?? "", env));
     out(texts.join("\n"));
-    return result?.isError || texts.some((t) => t.trimStart().startsWith("Error:")) ? 1 : 0;
+    return result?.isError || texts.some((t) => readable(t).trimStart().startsWith("Error:")) ? 1 : 0;
   } catch (e) {
     err(`Error: ${scrub(e?.message ?? e, env)}`);
     return 1;

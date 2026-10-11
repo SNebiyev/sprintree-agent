@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { MIN_NODE, KNOWN_CONFIG_KEYS } from "../skills/sprintree/scripts/st.mjs";
-import { ROOT } from "../test-support/helpers.mjs";
+import { ROOT, TOKEN_CASES, decodeEscapes } from "../test-support/helpers.mjs";
 
 const read = (f) => readFileSync(path.join(ROOT, f), "utf8");
 const flat = (s) => s.replace(/\s+/g, " ");
@@ -20,8 +20,8 @@ test("no doc offers a shell pipe, a stdin form, a heredoc or a here-string for t
     assert.ok(!/(^|\n)\s*(echo|printf|cat)\b[^\n]*st\.mjs/.test(text), `${f}: echo/printf/cat example`);
     assert.ok(!/<<\s*'?EOF/.test(text), `${f}: heredoc example`);
     assert.ok(!/<\s*args\.json/.test(text), `${f}: stdin redirect`);
-    assert.ok(!/st\.mjs[^\n]* - (<|$|\s)/m.test(text), `${f}: stdin \`-\` form`);
-    assert.ok(!/@'/.test(text), `${f}: PowerShell here-string`);
+    assert.ok(!/st\.mjs[^\n]* -(\s|$)/m.test(text), `${f}: stdin \`-\` form`);
+    assert.ok(!/@['"][ \t]*$/m.test(text), `${f}: PowerShell here-string (@' or @" ending a line)`);
   }
 });
 
@@ -37,9 +37,11 @@ test("the docs say external text goes through the agent's file-writing tool into
   assert.ok(!/\$json/.test(read(README)), "README builds JSON in the shell");
 });
 
-test("the minimum Node version is stated once (MIN_NODE) and no doc says another, a bare `Node 18` included", () => {
+const NODE_FILES = [README, SKILL, "GEMINI.md", AGENTS, "CHANGELOG.md", "CONTRIBUTING.md", ST, ".claude/pcc.md", "docs/maintainers/RESEARCH.md"];
+
+test("the minimum Node version is stated once (MIN_NODE) and no doc says another: not `Node 18`, `node 18.x` or another 18.y.z either", () => {
   let seen = 0;
-  for (const f of [README, SKILL, "GEMINI.md", AGENTS, "CHANGELOG.md", "CONTRIBUTING.md", ST, ".claude/pcc.md", "docs/maintainers/RESEARCH.md"]) {
+  for (const f of NODE_FILES) {
     const text = read(f);
     for (const m of text.matchAll(/\bNode(?:\.js)?\s*(?:>=|≥)\s*v?(\d+(?:\.\d+){0,2})/g)) {
       seen++;
@@ -49,18 +51,29 @@ test("the minimum Node version is stated once (MIN_NODE) and no doc says another
       seen++;
       assert.equal(m[1], MIN_NODE, `${f}: "${m[0]}"`);
     }
-    for (const m of text.matchAll(/\bNode(?:\.js)?\s+v?18(?![\d.])/g)) assert.ok(false, `${f}: a bare "${m[0]}" (state ${MIN_NODE})`);
+    for (const m of text.matchAll(/\b[Nn]ode(?:\.js)?\s+v?18(?!\.\d)/g)) assert.ok(false, `${f}: a bare "${m[0]}" (state ${MIN_NODE})`);
+  }
+  for (const f of [...NODE_FILES, ".github/workflows/test.yml", "package.json"]) {
+    for (const m of read(f).matchAll(/(?<![\d.])18\.\d+\.\d+(?![\d.])/g)) assert.equal(m[0], MIN_NODE, `${f}: "${m[0]}"`);
   }
   assert.ok(seen >= 4, "the docs should state the minimum somewhere");
 });
 
-test("CI runs the full suite on exactly MIN_NODE (not on a floating 18) and PCC runs it per Node version", () => {
+test("CI runs the full suite on exactly MIN_NODE (not on a floating 18) and PCC runs it per Node version, MIN_NODE first", () => {
   const wf = read(".github/workflows/test.yml");
   assert.match(wf, new RegExp(`node:\\s*\\[[^\\]]*"${MIN_NODE.replace(/\./g, "\\.")}"`), "matrix entry");
   assert.ok(!/node:\s*\[[^\]]*\b18\b[^.]/.test(wf), "a floating 18 is still in the matrix");
   const pcc = read(".claude/pcc.md");
-  assert.ok(pcc.includes(MIN_NODE), "pcc.md names the MIN_NODE version");
+  assert.ok(pcc.includes(`for n in ${MIN_NODE} `), "the pcc.md loop starts with MIN_NODE");
   assert.match(pcc, /npm test/);
+});
+
+test("line endings are LF, so a Windows checkout reads the same files", () => {
+  assert.match(read(".gitattributes"), /^\* text=auto eol=lf$/m);
+});
+
+test("SKILL.md lists the doc files in the order st.mjs reads them", () => {
+  assert.ok(flat(read(SKILL)).includes("`AGENTS.md`, `CLAUDE.md`, `GEMINI.md` or `.claude/CLAUDE.md`"));
 });
 
 test("the token-location sentence is identical in SKILL.md and the AGENTS.md template", () => {
@@ -70,7 +83,7 @@ test("the token-location sentence is identical in SKILL.md and the AGENTS.md tem
 });
 
 test("SKILL.md's config JSON block equals .sprintree.example.json, and it names exactly the known keys", () => {
-  const block = /```json\n([\s\S]*?)\n```/.exec(read(SKILL))[1];
+  const block = /```json\r?\n([\s\S]*?)\r?\n```/.exec(read(SKILL))[1];
   const example = JSON.parse(read(".sprintree.example.json"));
   assert.deepEqual(JSON.parse(block), example);
   assert.deepEqual(Object.keys(example).sort(), [...KNOWN_CONFIG_KEYS].sort());
@@ -94,17 +107,18 @@ test("the AGENTS.md template says where each client installs the skill, and the 
   assert.ok(flat(read(README)).includes(".agents/skills/sprintree/"), "README: Codex per-repo path");
 });
 
-test("the gitleaks rule covers the PAT and both OAuth token shapes like the redaction in st.mjs, and reports the token as group 1", () => {
+test("the gitleaks rule reports what TOKEN_CASES says, in the decoded text, as group 1 (st.mjs redacts the same table), and it has the keywords", () => {
   const toml = read(".gitleaks.toml");
   const re = new RegExp(/regex = '''(.*)'''/.exec(toml)[1]);
   assert.match(toml, /secretGroup = 1/);
-  const body = "Ab1-_".repeat(6);
-  for (const prefix of ["itn_", "itna_", "itnr_"]) {
-    assert.equal(re.exec(`token=${prefix}${body}`)?.[1], prefix + body, prefix);
-    assert.equal(re.exec(`${prefix}${body}`)?.[1], prefix + body, `${prefix} at the start of the text`);
-    assert.ok(toml.includes(`"${prefix}"`), `keyword ${prefix}`);
+  for (const [name, text, token] of TOKEN_CASES) assert.equal(re.exec(decodeEscapes(text))?.[1] ?? null, token, name);
+  for (const prefix of ["itn_", "itna_", "itnr_"]) assert.ok(toml.includes(`"${prefix}"`), `keyword ${prefix}`);
+});
+
+test("inline JSON is only for plain typed words: both docs that carry the rule state it, and no example breaks it", () => {
+  for (const f of [SKILL, AGENTS]) assert.match(flat(read(f)), /no quote, `\$`, backtick or `\\`, and nothing (taken )?from the repo/, f);
+  assert.ok(flat(read(SKILL)).includes("a keyword from the repo or a card goes through `@file`"), "SKILL.md Step 2 points back to the rule");
+  for (const f of [SKILL, AGENTS, README, "GEMINI.md"]) {
+    for (const m of read(f).matchAll(/st\.mjs\s+call\s+\S+\s+'([^'\n]*)'/g)) assert.ok(!/[$`\\]/.test(m[1]), `${f}: inline JSON with $, a backtick or a backslash: ${m[0]}`);
   }
-  assert.equal(re.exec(`SPRINTREE_TOKEN_itn_${body}`)?.[1], `itn_${body}`, "after an underscore");
-  assert.equal(re.exec(`_itn_${body}_`)?.[1], `itn_${body}_`, "between underscores");
-  assert.ok(!re.test(`itnx_${body}`) && !re.test("itn_short") && !re.test(`keyitn_${body}`), "not a token");
 });

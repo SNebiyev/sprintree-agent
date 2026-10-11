@@ -14,10 +14,6 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const SNAPSHOT = path.join(ROOT, "test", "tools.snapshot.json");
 export const DOCS = ["skills/sprintree/SKILL.md", "templates/AGENTS.md", "README.md", "GEMINI.md"];
 
-// Backticked snake_case words that are not tools, arguments or enum values of the live server:
-// `.sprintree.json` keys and a Codex config option.
-export const ALLOW = new Set(["section_titles", "bearer_token_env_var"]);
-
 /** True when `tool` takes the argument `k`. */
 const hasArg = (tools, tool, k) => Object.hasOwn(tools[tool].properties, k);
 
@@ -47,6 +43,10 @@ export function buildSnapshot(tools) {
 const SNAKE = /[a-z][a-z0-9]*(?:_[a-z0-9]+)+/g;
 const WORD = new RegExp(`^${SNAKE.source}$`);
 const OPEN_FENCE = /^\s*(`{3,}|~{3,})\s*([A-Za-z0-9_-]*)/;
+
+// Backticked snake_case words that are not tools, arguments or enum values of the live server: the snake_case
+// `.sprintree.json` keys and a Codex config option.
+export const ALLOW = new Set([...KNOWN_CONFIG_KEYS.filter((k) => WORD.test(k)), "bearer_token_env_var"]);
 
 /** Top-level `{"...": ...}` substrings of a line (string-aware brace matching), with their start index. */
 function jsonObjects(line) {
@@ -99,25 +99,29 @@ export function checkText(text, snap, file = "text") {
     for (const [k, v] of Object.entries(obj)) problems.push(...checkArg(at, tool, k, [].concat(v).filter((x) => typeof x === "string")));
   };
   let carry = null; // the last tool named earlier in this paragraph (a JSON example often sits on the line after its tool)
-  let fence = null; // the open code fence: { char, lang, start, body }
+  let fence = null; // the open code fence: { isJson, closer (regex), start, body, tool }
   const lines = text.split(/\r?\n/);
   const closeFence = () => {
     // A ```json block is a config example when it only has config keys, otherwise it is checked as arguments of the paragraph's tool.
-    if (fence.lang.toLowerCase() === "json") {
-      const at = `${file}:${fence.start}`;
-      let obj;
-      try { obj = JSON.parse(fence.body.join("\n")); } catch { problems.push(`${at}: JSON block does not parse`); return; }
-      if (obj && typeof obj === "object" && !Array.isArray(obj) && !Object.keys(obj).every((k) => KNOWN_CONFIG_KEYS.includes(k))) checkObject(at, fence.tool, obj);
-    }
+    if (!fence.isJson) return;
+    const at = `${file}:${fence.start}`;
+    let obj;
+    try { obj = JSON.parse(fence.body.join("\n")); } catch { problems.push(`${at}: JSON block does not parse`); return; }
+    if (obj && typeof obj === "object" && !Array.isArray(obj) && !Object.keys(obj).every((k) => KNOWN_CONFIG_KEYS.includes(k))) checkObject(at, fence.tool, obj);
   };
   lines.forEach((line, i) => {
     const at = `${file}:${i + 1}`;
     if (fence) {
-      if (new RegExp(`^\\s*${fence.char}{3,}\\s*$`).test(line)) { closeFence(); fence = null; return; }
-      if (fence.lang.toLowerCase() === "json") { fence.body.push(line); return; }
+      if (fence.closer.test(line)) { closeFence(); fence = null; return; }
+      if (fence.isJson) { fence.body.push(line); return; }
     } else {
       const open = OPEN_FENCE.exec(line);
-      if (open) { fence = { char: open[1][0], lang: open[2], start: i + 1, body: [], tool: carry }; return; }
+      if (open) {
+        // a fence is closed by a line of the same character, at least as long as the opening one
+        const [, ticks, lang] = open;
+        fence = { isJson: lang.toLowerCase() === "json", closer: new RegExp(`^\\s*${ticks[0]}{${ticks.length},}\\s*$`), start: i + 1, body: [], tool: carry };
+        return;
+      }
     }
     if (!line.trim()) { carry = null; return; }
     // PowerShell-escaped JSON (`{\"a\":\"b\"}`) is read as the JSON it stands for.

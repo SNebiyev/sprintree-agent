@@ -67,19 +67,20 @@ first page is everything, and never report "no such card" or "nothing open" from
    ```
    - **When:** only when that search found no `sprintree` tool. Say once in the report that MCP was not
      connected, and give the fix from the README (one command per client).
-   - **Arguments:** inline `'<json>'` is only for JSON you wrote yourself that holds no card, comment or
-     config text. Anything else (titles, comments, long Markdown, whatever you did not write yourself) is
-     written with your own file-writing tool (Write / edit_file) into a fresh temp directory outside the repo
-     (your scratchpad, or a new temp directory), never via echo, printf, a heredoc or a PowerShell here-string
-     (a quote or a line `EOF` in the text would run the rest as shell). Pass it as `@<absolute path>/args.json`,
-     the only file form (there is no stdin mode), and delete the file and the directory afterwards.
+   - **Arguments:** inline `'<json>'` is only for values you typed yourself that are plain words or numbers: no
+     quote, `$`, backtick or `\`, and nothing taken from the repo (a file name, an error message) or from a
+     card, comment or config text. Every other argument goes through a file: write the JSON with your own
+     file-writing tool (Write / edit_file) into a fresh temp directory outside the repo (your scratchpad, or a new
+     temp directory), never via echo, printf, a heredoc or a PowerShell here-string (a quote, a `$(...)` or a line
+     `EOF` in the text would run the rest as shell). Pass it as `@<absolute path>/args.json` and delete the file and
+     the directory afterwards.
    - **Token:** Create a personal access token in Sprintree under Settings -> API & MCP -> Personal access tokens
      (tokens start with `itn_`) and export it as `SPRINTREE_TOKEN`. Never print or store it.
    - **Exit codes:** 0 means done. Any refusal (HTTP error, JSON-RPC error, `isError`, a text answer starting
      with "Error:") exits 1, so a failed write is never read as success.
 2. **Project key and settings.** `node <skill-dir>/scripts/st.mjs config` resolves, nearest first:
    - `.sprintree.json` in the repo (see Configuration below);
-   - a `sprintree.com/p/<KEY>` link in `AGENTS.md`, `CLAUDE.md`, `.claude/CLAUDE.md` or `GEMINI.md`.
+   - a `sprintree.com/p/<KEY>` link in `AGENTS.md`, `CLAUDE.md`, `GEMINI.md` or `.claude/CLAUDE.md`.
    No key found: `list_projects`, match by name, and if still ambiguous ask the user. Then add the
    link to the repo's agent instructions file so the next run does not have to ask.
 3. **Project rules.** `list_labels` and `get_project_topology` (top level). Use the status category
@@ -131,7 +132,8 @@ skip a card - the card is where the next session looks.
 
 ## Step 2 - read the board state
 
-For each item, `search_issues` with 2-3 distinctive keywords (file name, error text, feature name)
+For each item, `search_issues` with 2-3 distinctive keywords (file name, error text, feature name; a
+keyword from the repo or a card goes through `@file`, see Step 0)
 across ALL statuses, plus `get_project_topology` with `parent` + `depth:"all"` under the epic it most
 likely belongs to. Also pull `search_issues` with `category: "in_progress"` - those cards most often lie.
 

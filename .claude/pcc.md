@@ -12,17 +12,19 @@ Dependency-free Node (>=18.7.0) scripts and JSON manifests, a Markdown skill. No
 ## gate (every commit)
 ```bash
 npm test                                                              # local Node; `node --test` discovers test/*.test.mjs: client, tool check, version check, JSON lint, docs
-# MIN_NODE (18.7.0, the CI matrix pins the same) and the newest LTS: the suite under that Node binary directly; a failure in ANY iteration fails the gate
-rc=0; for n in 18.7.0 24; do timeout 300 "$(npx -y node@$n -p process.execPath)" --test || { echo "FAILED on Node $n"; rc=1; }; done; test $rc = 0
+# MIN_NODE (18.7.0, the CI matrix pins the same) and the newest LTS (24.21.0): the suite under that exact Node binary directly; a failure in ANY iteration fails the gate
+rc=0; for n in 18.7.0 24.21.0; do timeout 300 "$(npx -y node@$n -p process.execPath)" --test || { echo "FAILED on Node $n"; rc=1; }; done; test $rc = 0
 claude plugin validate . --strict && claude plugin validate .claude-plugin/plugin.json --strict && claude plugin validate .claude-plugin/marketplace.json --strict
-docker run --rm --network none -v "$PWD:/repo" -w /repo rhysd/actionlint:latest
+docker run --rm --network none -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
 # gitleaks needs a real .git dir: in a worktree (.git is a file) it scans 0 commits, so scan a clone (check "N commits scanned" > 0)
-rm -rf "$SCRATCH/gl" && git clone -q --no-local . "$SCRATCH/gl" && docker run --rm -v "$SCRATCH/gl:/repo" zricethezav/gitleaks:latest detect --source /repo --config /repo/.gitleaks.toml --log-opts=--all --no-banner
+rm -rf "$SCRATCH/gl" && git clone -q --no-local . "$SCRATCH/gl" && docker run --rm --network none -v "$SCRATCH/gl:/repo" zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f detect --source /repo --config /repo/.gitleaks.toml --log-opts=--all --no-banner
 ```
 Negative control (must FAIL and name the sprintree-token rule for each of these): in a throwaway git repo outside the worktree, commit a file with a fake
-`itn_`, `itna_` and `itnr_` token (one of them bare in prose), a token between underscores (`_itn_...._`) and one after an underscore
-(`SPRINTREE_TOKEN_itn_....`), plus a line of plain prose and `keyitn_....` that must NOT be flagged (a token never continues a word). Run the same gitleaks command
+`itn_`, `itna_` and `itnr_` token (one of them bare in prose), a token between underscores (`_itn_...._`), one after an underscore
+(`SPRINTREE_TOKEN_itn_....`), a percent-encoded one (`Bearer%20itn_....`, `token%3Ditnr_....`) and a `\u005f`-escaped one (`itna\u005f....`), plus a line of plain prose,
+`keyitn_....` and `itnac_....` that must NOT be flagged (a token never continues a word). Run the same gitleaks command
 with `--config /repo/.gitleaks.toml` copied there and read the findings (rule, line), not just the exit code.
+The tools are pinned (actionlint 1.7.12, gitleaks v8.30.1, Node 18.7.0 and 24.21.0): bump them on purpose, in a commit of their own, and re-run the negative control.
 Evidence is the output (`# pass N`, `# fail 0`, `no leaks found`), not the exit code. Keep this a superset of `.github/workflows/test.yml`.
 
 ## sweep

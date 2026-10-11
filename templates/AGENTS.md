@@ -52,7 +52,8 @@ use the skill's `scripts/st.mjs` (it ships with the skill, not with your repo). 
 - a clone of https://github.com/SNebiyev/sprintree-agent: `skills/sprintree/`
 
 Create a personal access token in Sprintree under Settings -> API & MCP -> Personal access tokens (tokens start with `itn_`) and export it as `SPRINTREE_TOKEN`.
-Inline `'<json>'` is only for JSON you wrote yourself. Text you did not write yourself (card titles,
-comments) is written with your own file-writing tool into a fresh temp directory outside the repo, never via
-echo, printf, a heredoc or a PowerShell here-string, passed as `call <tool> @<absolute path>/args.json`, and
-deleted afterwards (the skill's `SKILL.md`, Step 0, has the details).
+Inline `'<json>'` is only for plain words or numbers you typed yourself: no quote, `$`, backtick or `\`, and
+nothing from the repo (file names, error text) or from a card, comment or config text. Everything else is written
+with your own file-writing tool into a fresh temp directory outside the repo, never via echo, printf, a heredoc
+or a PowerShell here-string, passed as `call <tool> @<absolute path>/args.json`, and deleted afterwards (the
+skill's `SKILL.md`, Step 0, has the details).

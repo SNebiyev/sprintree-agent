@@ -70,11 +70,20 @@ const CASES = [
   ["st.mjs with a real tool or a placeholder", "node st.mjs schema create_issue\nnode st.mjs call <tool> '<json>'", 0],
   ["PowerShell-escaped JSON with a misspelled argument", String.raw`node st.mjs call search_issues '{\"project\":\"K\",\"catgory\":\"todo\"}'`, 1, /catgory/],
   ["PowerShell-escaped JSON that is right", String.raw`node st.mjs call search_issues '{\"project\":\"K\",\"category\":\"todo\"}'`, 0],
-  ["a json fence with config keys only is a config example", '```json\n{ "project": "KEY", "x": { "done": "shipped" } }\n```'.replace('"x"', '"statuses"'), 0],
+  ["a json fence with config keys only is a config example", '```json\n{ "project": "KEY", "statuses": { "done": "shipped" } }\n```', 0],
   ["a json fence with tool arguments is checked against the tool before it", 'Run `st.mjs call search_issues @args.json` with args.json:\n```json\n{"project":"K","catgory":"todo"}\n```', 1, /search_issues has no argument "catgory"/],
   ["a multi-line json fence with tool arguments", '```json\n{\n  "project": "K",\n  "catgory": "todo"\n}\n```', 1, /catgory/],
   ["a ~~~json config example is a fence too", '~~~json\n{"project":"KEY","statuses":{"done":"shipped"}}\n~~~', 0],
-  ["a ~~~json fence is a fence too", '~~~json\n{"project":"K","catgory":"todo"}\n~~~', 1, /catgory/],
+  ["a multi-line ~~~json fence is a fence too", '~~~json\n{\n  "project": "K",\n  "catgory": "todo"\n}\n~~~', 1, /catgory/],
+  ["a ~~~ fence is not closed by backticks", '~~~json\n{"project":"K"}\n```\n{"catgory":"todo"}\n~~~', 1, /does not parse/],
+  ["a longer fence is not closed by a shorter one, an inner json example is not a fence", 'Call search_issues:\n````markdown\n```json\n{"project":"K","query":"x"}\n```\nmore text\n````\nAfter.', 0],
+  ["a fence closes with at least as many characters as it opened with", '````json\n{"project":"K"}\n`````\nThen call search_issues \'{"catgory":"todo"}\'', 1, /catgory/],
+  ["a closing fence may be longer", '```json\n{"project":"KEY","language":"x"}\n`````\nDone.', 0],
+  ["JSON on the line after its tool uses that tool", 'Query `search_issues` with\n`{"project":"K","nope":1}`', 1, /search_issues has no argument "nope"/],
+  ["JSON on the line after its tool, right", 'Query `search_issues` with\n`{"project":"K","category":["todo"]}`', 0],
+  ["a blank line ends the paragraph: any tool will do", 'Query `search_issues`.\n\n`{"project":"K","catgory":"todo"}`', 1, /no tool has no argument "catgory"/],
+  ["a blank line ends the paragraph: the argument of another tool is fine", 'Query `search_issues`.\n\n`{"project":"K","category":["todo"],"depth":"all"}`', 0],
+  ["no tool at all: the enum of some tool applies", '`{"category":"doing"}`', 1, /doing/],
   ["an unclosed json fence is an error", '```json\n{"project":"K"}\n\nLater: call search_issues \'{"catgory":"todo"}\'', 1, /never closed/],
   ["a json fence that does not parse", '```json\n{"project":\n```', 1, /does not parse/],
 ];
@@ -85,17 +94,6 @@ test("negative control table: each wrong tool, argument, enum value or fence is 
     assert.equal(problems.length, count, `${name}: ${JSON.stringify(problems)}`);
     if (count) assert.match(problems.join("\n"), message, name);
   }
-});
-
-test("JSON on a line without a tool name uses the last tool named earlier in the paragraph, else the union of all tools", () => {
-  const carry = checkText('Query `search_issues` with\n`{"project":"K","nope":1}`', snap);
-  assert.equal(carry.length, 1);
-  assert.match(carry[0], /search_issues has no argument "nope"/);
-  assert.deepEqual(checkText('Query `search_issues` with\n`{"project":"K","category":["todo"]}`', snap), []);
-  // a blank line ends the paragraph: no carried tool, the union applies
-  assert.equal(checkText('Query `search_issues`.\n\n`{"project":"K","catgory":"todo"}`', snap).length, 1);
-  assert.deepEqual(checkText('Query `search_issues`.\n\n`{"project":"K","category":["todo"],"depth":"all"}`', snap), []);
-  assert.equal(checkText('`{"category":"doing"}`', snap).length, 1);
 });
 
 test("buildSnapshot keeps argument names and nested enums", () => {

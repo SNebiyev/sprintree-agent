@@ -7,9 +7,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
-  run, resolveConfig, isMainModule, VERSION, ancestors, checkMcpUrl, MIN_NODE, KNOWN_CONFIG_KEYS, listTools, stripControls, findDocKey,
+  run, resolveConfig, isMainModule, VERSION, ancestors, repoRoot, checkMcpUrl, MIN_NODE, KNOWN_CONFIG_KEYS, listTools, stripControls, findDocKey,
 } from "../skills/sprintree/scripts/st.mjs";
-import { tmpDir, reply, mockFetch, childEnv } from "../test-support/helpers.mjs";
+import { tmpDir, reply, mockFetch, childEnv, TOKEN_CASES } from "../test-support/helpers.mjs";
 
 const TOKEN = "spt_secret_value_123456";
 const ST = fileURLToPath(new URL("../skills/sprintree/scripts/st.mjs", import.meta.url));
@@ -158,13 +158,6 @@ test("call reads arguments from @file relative to cwd", async () => {
   assert.equal(h.fetch.calls.at(-1).body.params.arguments.body, "# long\nmarkdown");
 });
 
-test("`-` is not a stdin mode: only inline JSON and @file are arguments", async () => {
-  const h = harness(okCall);
-  assert.equal(await h.go(["call", "add_comment", "-"]), 1);
-  assert.match(h.errs[0], /not valid JSON/);
-  assert.equal(h.fetch.calls.length, 0);
-});
-
 test("call reads arguments from @<absolute path> too", async () => {
   const dir = tmpRepo({ "args.json": '{"key":"SPD-3","body":"çox \\"quoted\\""}' });
   const h = harness(okCall);
@@ -172,10 +165,13 @@ test("call reads arguments from @<absolute path> too", async () => {
   assert.deepEqual(h.fetch.calls.at(-1).body.params.arguments, { key: "SPD-3", body: 'çox "quoted"' });
 });
 
-test("invalid JSON arguments exit 1", async () => {
-  const h = harness(() => null);
-  assert.equal(await h.go(["call", "x", "{nope"]), 1);
-  assert.match(h.errs[0], /not valid JSON/);
+test("invalid JSON arguments exit 1 before any request (a lone `-` is no stdin mode: only inline JSON and @file are arguments)", async () => {
+  for (const bad of ["{nope", "-"]) {
+    const h = harness(() => null);
+    assert.equal(await h.go(["call", "x", bad]), 1, bad);
+    assert.match(h.errs[0], /not valid JSON/, bad);
+    assert.equal(h.fetch.calls.length, 0, bad);
+  }
 });
 
 test("unknown command exits 1 with usage", async () => {
@@ -254,11 +250,16 @@ test(".sprintree.json wins and carries language/status mapping", () => {
   assert.equal(cfg.statuses.review, "in_review");
 });
 
-test("key without any link exits 1", async () => {
+test("key without any link exits 1 and the hint names every doc file that is read and .sprintree.json", async () => {
   const root = tmpRepo();
   const h = harness(() => null, { env: {}, cwd: root });
   assert.equal(await h.go(["key"]), 1);
   assert.match(h.errs[0], /No project key/);
+  assert.match(h.errs[0], /AGENTS\.md, CLAUDE\.md, GEMINI\.md or \.claude\/CLAUDE\.md/);
+  assert.ok(h.errs[0].includes(".sprintree.json"));
+  const missing = harness(() => null, { env: {}, cwd: root });
+  assert.equal(await missing.go(["key", path.join(root, "no", "such", "dir")]), 1, "a directory that does not exist is no crash");
+  assert.match(missing.errs[0], /No project key/);
 });
 
 test("key and config work without a global fetch and on an old Node", async () => {
@@ -333,9 +334,9 @@ test(".sprintree.json that leads outside the repo or to a non-regular file is re
 
 test(".sprintree.json whose real path is outside the directory it was found in is refused", () => {
   const fs = fakeFs({ "/repo/.git": null, "/repo/.sprintree.json": '{"project":"SPD"}', "/etc/other.json": '{"project":"EVIL"}' }, { real: { "/repo/.sprintree.json": "/etc/other.json" } });
-  assert.throws(() => resolveConfig("/repo", { fs }), /outside/);
+  assert.throws(() => resolveConfig("/repo", { path: path.posix, fs }), /outside/);
   const inside = fakeFs({ "/repo/.git": null, "/repo/.sprintree.json": '{"project":"SPD"}' });
-  assert.equal(resolveConfig("/repo", { fs: inside }).project, "SPD");
+  assert.equal(resolveConfig("/repo", { path: path.posix, fs: inside }).project, "SPD");
 });
 
 test("config prints only the known keys; unknown keys are named on stderr, never their values", async () => {
@@ -386,14 +387,6 @@ test(".sprintree.json with a token-like key or itn_ value warns on stderr withou
   assert.match(all, /nested\.pat/);
   assert.match(all, /note/);
   assert.ok(!all.includes("abc123secretvalue") && !all.includes("itn_deadbeef"));
-});
-
-test("`key` command surfaces the token warning on stderr", async () => {
-  const root = tmpRepo({ ".sprintree.json": JSON.stringify({ project: "SPD", secret: "s3" }) });
-  const h = harness(() => null, { env: {}, cwd: root });
-  assert.equal(await h.go(["key"]), 0);
-  assert.deepEqual(h.lines, ["SPD"]);
-  assert.match(h.errs.join("\n"), /Warning:.*secret/);
 });
 
 // ---- tokens, errors, redaction ---------------------------------------------------------------
@@ -683,11 +676,12 @@ test("isMainModule: a symlink to the script counts as the script (unit test, no 
 // ---- path.win32: parent-directory walk and key lookup on Windows-style paths, runnable on any OS
 
 /**
- * A stand-in file system: files is {path: string | null (a directory)}. `real` maps a path to the real path it resolves to,
- * (a list: one entry per resolution), `uid` is the owner of every file, `ino` overrides the inode a path reports through statSync (not through fstatSync),
- * `calls` collects the flags of every openSync.
+ * A stand-in file system: files is {path: string | null (a directory)}. Options: `real` maps a path to the real path it
+ * resolves to (a list: one entry per resolution), `uid` owns every file, `ino` overrides the inode a path reports through
+ * statSync (not through fstatSync), `sizes` the size a path reports, `readlink` what /proc/self/fd/N points to (a function
+ * of the opened path), `calls` collects the flags and `opened` the path of every openSync.
  */
-function fakeFs(files, { real = {}, uid = process.getuid?.(), ino = {}, notFileOnFstat = false, calls = [] } = {}) {
+function fakeFs(files, { real = {}, uid = process.getuid?.(), ino = {}, sizes = {}, notFileOnFstat = false, readlink = (p) => p, calls = [], opened = [] } = {}) {
   const seen = new Map();
   const norm = (p) => p.toLowerCase();
   const set = new Map(Object.entries(files).map(([k, v]) => [norm(k), v]));
@@ -697,9 +691,10 @@ function fakeFs(files, { real = {}, uid = process.getuid?.(), ino = {}, notFileO
     if (!set.has(norm(p))) throw missing();
     const v = set.get(norm(p));
     const file = typeof v === "string" && !(viaFd && notFileOnFstat);
-    return { isFile: () => file, size: typeof v === "string" ? Buffer.byteLength(v) : 0, nlink: 1, uid, dev: 1, ino: (!viaFd && ino[p]) || keys.indexOf(norm(p)) + 1 };
+    return { isFile: () => file, size: sizes[p] ?? (typeof v === "string" ? Buffer.byteLength(v) : 0), nlink: 1, uid, dev: 1, ino: (!viaFd && ino[p]) || keys.indexOf(norm(p)) + 1 };
   };
   const fds = [];
+  const cursor = [];
   return {
     constants: { O_RDONLY: 0, O_NOFOLLOW: 0x100, O_NONBLOCK: 0x800 },
     existsSync: (p) => set.has(norm(p)),
@@ -712,21 +707,47 @@ function fakeFs(files, { real = {}, uid = process.getuid?.(), ino = {}, notFileO
       throw missing();
     },
     statSync: (p) => stat(p, false),
-    openSync: (p, flags) => (calls.push(flags), stat(p), fds.push(p) - 1),
+    openSync: (p, flags) => (calls.push(flags), opened.push(p), stat(p), fds.push(p) - 1, cursor.push(0), fds.length - 1),
     fstatSync: (fd) => stat(fds[fd], true),
-    readFileSync: (fd) => Buffer.from(set.get(norm(fds[fd]))),
+    readlinkSync: (p) => {
+      const m = /^\/proc\/self\/fd\/(\d+)$/.exec(p);
+      if (!m) throw missing();
+      return readlink(fds[Number(m[1])]);
+    },
+    readSync: (fd, buf, off, len) => {
+      const data = Buffer.from(set.get(norm(fds[fd])));
+      const n = data.copy(buf, off, cursor[fd], cursor[fd] + len);
+      cursor[fd] += n;
+      return n;
+    },
     closeSync: () => {},
   };
 }
 
+/** Runs `fn` as on Windows: process.getuid does not exist. */
+function withoutUid(fn) {
+  const saved = process.getuid;
+  process.getuid = undefined;
+  try {
+    return fn();
+  } finally {
+    process.getuid = saved;
+  }
+}
+
 test("win32: ancestors walk up to the repo root and stop there", () => {
   const w = path.win32;
-  const fs = fakeFs({ "C:\\repo\\.git": null });
-  assert.deepEqual([...ancestors("C:\\repo\\a\\b", { path: w, fs })], ["C:\\repo\\a\\b", "C:\\repo\\a", "C:\\repo"]);
+  const home = "C:\\Users\\me";
+  const fs = fakeFs({ "C:\\Users\\me\\repo\\.git": null });
+  const root = repoRoot("C:\\Users\\me\\repo\\a\\b", { path: w, fs, home });
+  assert.equal(root, "C:\\Users\\me\\repo");
+  assert.deepEqual([...ancestors("C:\\Users\\me\\repo\\a\\b", root, w)], ["C:\\Users\\me\\repo\\a\\b", "C:\\Users\\me\\repo\\a", "C:\\Users\\me\\repo"]);
 });
 
 test("without a .git above the directory, only that directory is looked at (no climb to the drive or filesystem root)", () => {
-  assert.deepEqual([...ancestors("D:\\x\\y", { path: path.win32, fs: fakeFs({}) })], ["D:\\x\\y"]);
+  const w = path.win32;
+  assert.equal(repoRoot("D:\\x\\y", { path: w, fs: fakeFs({}), home: "C:\\Users\\me" }), null);
+  assert.deepEqual([...ancestors("D:\\x\\y", null, w)], ["D:\\x\\y"]);
   const shared = tmpRepo();
   writeFileSync(path.join(shared, ".sprintree.json"), '{"project":"PLANTED"}');
   const work = path.join(shared, "victim", "work");
@@ -737,24 +758,53 @@ test("without a .git above the directory, only that directory is looked at (no c
   assert.equal(resolveConfig(work).project, "OWN");
 });
 
-test("the search for .git stops at the home directory", () => {
+test("the search for .git stops at the home directory, which is looked at itself; a path spelled in another case is the same directory on Windows", () => {
   const w = path.win32;
-  const fs = fakeFs({ "C:\\.git": null, "C:\\Users\\me\\proj\\AGENTS.md": "https://sprintree.com/p/NO" });
-  assert.deepEqual([...ancestors("C:\\Users\\me\\proj", { path: w, fs, home: "C:\\Users\\me" })], ["C:\\Users\\me\\proj"]);
+  const above = fakeFs({ "C:\\.git": null, "C:\\Users\\me\\proj\\AGENTS.md": "https://sprintree.com/p/NO" });
+  assert.equal(repoRoot("C:\\Users\\me\\proj", { path: w, fs: above, home: "C:\\Users\\me" }), null);
+  assert.equal(repoRoot("c:\\USERS\\ME\\proj", { path: w, fs: above, home: "C:\\Users\\me" }), null, "another spelling of the same directories");
+  assert.equal(repoRoot("C:\\Users\\me\\proj", { path: w, fs: above, home: "c:\\users\\ME" }), null);
   const dotfiles = fakeFs({ "C:\\Users\\me\\.git": null });
-  assert.deepEqual([...ancestors("C:\\Users\\me\\proj", { path: w, fs: dotfiles, home: "C:\\Users\\me" })], ["C:\\Users\\me\\proj", "C:\\Users\\me"]);
+  assert.equal(repoRoot("C:\\Users\\me\\proj", { path: w, fs: dotfiles, home: "C:\\Users\\me" }), "C:\\Users\\me");
+});
+
+test("outside the home directory a .git counts only when the current user owns it (POSIX); with no uid (Windows) only the starting directory is looked at", () => {
+  const files = { "/shared/.git": null, "/shared/AGENTS.md": "https://sprintree.com/p/EVIL", "/shared/proj/sub": null };
+  const o = { path: path.posix, home: "/home/me" };
+  const mine = { "/home/me/.git": null, "/home/me/proj": null };
+  if (typeof process.getuid === "function") {
+    const foreign = { uid: process.getuid() + 1 };
+    assert.equal(repoRoot("/shared/proj/sub", { ...o, fs: fakeFs(files) }), "/shared", "own .git");
+    assert.equal(repoRoot("/shared/proj/sub", { ...o, fs: fakeFs(files, foreign) }), null, "foreign .git");
+    assert.equal(findDocKey("/shared/proj/sub", { ...o, fs: fakeFs(files, foreign) }), null, "a foreign repo is no reason to read its files");
+    assert.equal(repoRoot("/home/me/proj", { ...o, fs: fakeFs(mine, foreign) }), "/home/me", "inside the home directory ownership is not asked");
+  }
+  withoutUid(() => {
+    assert.equal(repoRoot("/shared/proj/sub", { ...o, fs: fakeFs(files) }), null, "no climb out of the starting directory");
+    assert.equal(repoRoot("/shared", { ...o, fs: fakeFs(files) }), "/shared", "a .git in the starting directory");
+    assert.equal(resolveConfig("/shared/proj/sub", { ...o, fs: fakeFs({ ...files, "/shared/.sprintree.json": '{"project":"EVIL"}' }) }).project, undefined);
+    assert.equal(repoRoot("/home/me/proj", { ...o, fs: fakeFs(mine) }), "/home/me", "inside the home directory the walk goes up to it");
+    // Windows reports some uid for a file, but there is none to compare it with: ownership is not asked
+    assert.equal(resolveConfig("/shared", { ...o, fs: fakeFs({ "/shared/.git": null, "/shared/.sprintree.json": '{"project":"OWN"}' }, { uid: 0 }) }).project, "OWN");
+  });
+});
+
+test("the home directory is compared by real path: a start directory reached through a link into it is inside", { skip: typeof process.getuid !== "function" }, () => {
+  const files = { "/work/.git": null, "/work/proj": null, "/home/me/proj": null };
+  const fs = fakeFs(files, { uid: process.getuid() + 1, real: { "/work/proj": "/home/me/proj" } });
+  assert.equal(repoRoot("/work/proj", { path: path.posix, fs, home: "/home/me" }), "/work", "inside the home directory ownership is not asked");
 });
 
 test("win32: key lookup from a nested dir finds AGENTS.md and .sprintree.json", () => {
   const w = path.win32;
   const fs = fakeFs({ "C:\\repo\\.git": null, "C:\\repo\\AGENTS.md": "Board https://sprintree.com/p/spd/board" });
-  assert.equal(resolveConfig("C:\\repo\\src\\deep", { path: w, fs }).project, "SPD");
+  assert.equal(resolveConfig("C:\\repo\\src\\deep", { path: w, fs, home: "C:\\" }).project, "SPD");
   const fs2 = fakeFs({
     "C:\\repo\\.git": null,
     "C:\\repo\\AGENTS.md": "sprintree.com/p/OLD",
     "C:\\repo\\src\\.sprintree.json": '{"project":"NEW"}',
   });
-  const cfg = resolveConfig("C:\\repo\\src\\deep", { path: w, fs: fs2 });
+  const cfg = resolveConfig("C:\\repo\\src\\deep", { path: w, fs: fs2, home: "C:\\" });
   assert.equal(cfg.project, "NEW");
   assert.equal(cfg._source, "C:\\repo\\src\\.sprintree.json");
 });
@@ -766,35 +816,117 @@ function rmSyncGit(dir) {
 
 // ---- the safe reader -------------------------------------------------------------------------
 
+const posix = { path: path.posix };
+const linux = process.platform === "linux";
+
+/** Runs `fn` as on another OS: process.platform is `name`. */
+function asPlatform(name, fn) {
+  const saved = Object.getOwnPropertyDescriptor(process, "platform");
+  Object.defineProperty(process, "platform", { value: name });
+  try {
+    return fn();
+  } finally {
+    Object.defineProperty(process, "platform", saved);
+  }
+}
+
+const cfgFiles = { "/repo/.git": null, "/repo/.sprintree.json": '{"project":"SPD"}' };
+
 test("the reader opens the real path with O_NOFOLLOW and O_NONBLOCK and refuses a descriptor that is another file than the path", () => {
   const files = { "/repo/.git": null, "/repo/AGENTS.md": "https://sprintree.com/p/ABC" };
   const calls = [];
-  assert.equal(findDocKey("/repo", { fs: fakeFs(files, { calls }) }).key, "ABC");
+  assert.equal(findDocKey("/repo", { ...posix, fs: fakeFs(files, { calls }) }).key, "ABC");
   assert.ok(calls.length > 0 && calls.every((f) => (f & 0x100) && (f & 0x800)), `open flags: ${calls}`);
   const warns = [];
-  assert.equal(findDocKey("/repo", { fs: fakeFs(files, { ino: { "/repo/AGENTS.md": 999 } }), warn: (l) => warns.push(l) }), null);
+  assert.equal(findDocKey("/repo", { ...posix, fs: fakeFs(files, { ino: { "/repo/AGENTS.md": 999 } }), warn: (l) => warns.push(l) }), null);
   assert.match(warns.join("\n"), /AGENTS\.md: changed while it was being opened/);
-  assert.throws(() => resolveConfig("/repo", { fs: fakeFs({ "/repo/.git": null, "/repo/.sprintree.json": '{"project":"SPD"}' }, { ino: { "/repo/.sprintree.json": 999 } }) }), /changed while/);
+  assert.throws(() => resolveConfig("/repo", { ...posix, fs: fakeFs(cfgFiles, { ino: { "/repo/.sprintree.json": 999 } }) }), /changed while/);
 });
 
-test("a parent directory swapped for a link between the check and the open is caught: the second resolution leaves the repo or leads to another file", () => {
-  const files = { "/repo/.git": null, "/repo/.sprintree.json": '{"project":"SPD"}', "/etc/other.json": '{"project":"EVIL"}' };
-  const out = fakeFs(files, { real: { "/repo/.sprintree.json": ["/repo/.sprintree.json", "/etc/other.json"] } });
-  assert.throws(() => resolveConfig("/repo", { fs: out }), /outside the repo/);
-  const back = fakeFs({ ...files, "/repo/other.json": '{"project":"EVIL"}' }, { real: { "/repo/.sprintree.json": ["/repo/.sprintree.json", "/repo/other.json"] } });
-  assert.throws(() => resolveConfig("/repo", { fs: back }), /changed while/);
+test("a path that leads outside the repo or to a non-regular file is refused before anything is opened", () => {
+  const opened = [];
+  const out = fakeFs({ ...cfgFiles, "/etc/other.json": '{"project":"EVIL"}' }, { real: { "/repo/.sprintree.json": "/etc/other.json" }, opened });
+  assert.throws(() => resolveConfig("/repo", { ...posix, fs: out }), /outside the repo/);
+  const dir = fakeFs({ "/repo/.git": null, "/repo/.sprintree.json": null }, { opened });
+  assert.throws(() => resolveConfig("/repo", { ...posix, fs: dir }), /not a regular file/);
+  assert.deepEqual(opened, [], "nothing was opened");
+  assert.equal(resolveConfig("/repo", { ...posix, fs: fakeFs(cfgFiles, { opened }) }).project, "SPD");
+  assert.deepEqual(opened, ["/repo/.sprintree.json"]);
+});
+
+test("containment is by directory: the parent itself is outside, a sibling called ..odd is inside, a repo reached through a link is compared by its real path", () => {
+  const withReal = (extra, real) => fakeFs({ ...cfgFiles, ...extra }, { real });
+  assert.throws(() => resolveConfig("/repo", { ...posix, fs: withReal({}, { "/repo/.sprintree.json": "/" }) }), /outside the repo/);
+  const odd = withReal({ "/repo/..odd/conf.json": '{"project":"ODD"}' }, { "/repo/.sprintree.json": "/repo/..odd/conf.json" });
+  assert.equal(resolveConfig("/repo", { ...posix, fs: odd }).project, "ODD");
+  const linked = fakeFs(
+    { "/link/.git": null, "/link/.sprintree.json": '{"project":"LINK"}', "/repo/.sprintree.json": '{"project":"LINK"}' },
+    { real: { "/link": "/repo", "/link/.sprintree.json": "/repo/.sprintree.json" } }
+  );
+  assert.equal(resolveConfig("/link", { ...posix, fs: linked }).project, "LINK");
+});
+
+test("win32: a file that resolves to another drive is outside the repo", () => {
+  const files = { "D:\\repo\\.git": null, "D:\\repo\\.sprintree.json": '{"project":"SPD"}', "C:\\other\\x.json": '{"project":"EVIL"}' };
+  const fs = fakeFs(files, { real: { "D:\\repo\\.sprintree.json": "C:\\other\\x.json" } });
+  assert.throws(() => resolveConfig("D:\\repo", { path: path.win32, fs, home: "D:\\" }), /outside the repo/);
+});
+
+test("a parent directory swapped for a link between the check and the open is caught (the place of the opened file is read again)", () => {
+  const files = { ...cfgFiles, "/etc/other.json": '{"project":"EVIL"}', "/repo/other.json": '{"project":"EVIL"}' };
+  const swapped = (to) => ({ real: { "/repo/.sprintree.json": ["/repo/.sprintree.json", to] } });
+  // where the OS cannot name an open file's path: the path is resolved a second time
+  asPlatform("darwin", () => {
+    assert.throws(() => resolveConfig("/repo", { ...posix, fs: fakeFs(files, swapped("/etc/other.json")) }), /outside the repo/);
+    assert.throws(() => resolveConfig("/repo", { ...posix, fs: fakeFs(files, swapped("/repo/other.json")) }), /changed while/);
+  });
+  // on Linux the descriptor itself says where the file is
+  asPlatform("linux", () => {
+    assert.throws(() => resolveConfig("/repo", { ...posix, fs: fakeFs(files, { readlink: () => "/etc/other.json" }) }), /outside the repo/);
+    assert.throws(() => resolveConfig("/repo", { ...posix, fs: fakeFs(files, { readlink: () => "/repo/other.json" }) }), /changed while/);
+    assert.equal(resolveConfig("/repo", { ...posix, fs: fakeFs(files) }).project, "SPD");
+  });
+});
+
+test("/proc/self/fd is read on Linux only, a procfs error with a code means 'resolve the path again', any other error is not swallowed", () => {
+  const spy = [];
+  const readlink = (p) => (spy.push(p), p);
+  asPlatform("linux", () => {
+    assert.equal(resolveConfig("/repo", { ...posix, fs: fakeFs(cfgFiles, { readlink }) }).project, "SPD");
+    assert.deepEqual(spy, ["/repo/.sprintree.json"]);
+    const noProc = () => { throw Object.assign(new Error("ENOENT"), { code: "ENOENT" }); };
+    assert.equal(resolveConfig("/repo", { ...posix, fs: fakeFs(cfgFiles, { readlink: noProc }) }).project, "SPD");
+    const bug = () => { throw new TypeError("not a function"); };
+    assert.throws(() => resolveConfig("/repo", { ...posix, fs: fakeFs(cfgFiles, { readlink: bug }) }), TypeError);
+  });
+  spy.length = 0;
+  for (const name of ["win32", "darwin"]) {
+    // C:\proc\self\fd\N is just a path there (a junction needs no privilege): it is never asked
+    asPlatform(name, () => assert.equal(resolveConfig("/repo", { ...posix, fs: fakeFs(cfgFiles, { readlink: (p) => (spy.push(p), "/etc/other.json") }) }).project, "SPD"));
+  }
+  assert.deepEqual(spy, []);
 });
 
 test("the reader refuses an opened descriptor that is not a regular file (a FIFO swapped in after the check)", () => {
-  const fs = fakeFs({ "/repo/.git": null, "/repo/.sprintree.json": '{"project":"SPD"}' }, { notFileOnFstat: true });
-  assert.throws(() => resolveConfig("/repo", { fs }), /not a regular file/);
+  assert.throws(() => resolveConfig("/repo", { ...posix, fs: fakeFs(cfgFiles, { notFileOnFstat: true }) }), /not a regular file/);
+});
+
+test("at most 1 MB is read, whatever size the file reports (a procfs file reports 0)", () => {
+  const json = (n) => '{"project":"SPD","pad":"' + "y".repeat(n - '{"project":"SPD","pad":""}'.length) + '"}';
+  const files = (text) => ({ "/repo/.git": null, "/repo/.sprintree.json": text });
+  const MB = 1024 * 1024;
+  assert.equal(resolveConfig("/repo", { ...posix, fs: fakeFs(files(json(MB))) }).project, "SPD", "exactly 1 MB is fine");
+  for (const size of [undefined, 0]) {
+    const fs = fakeFs(files(json(MB + 1)), { sizes: { "/repo/.sprintree.json": size } });
+    assert.throws(() => resolveConfig("/repo", { ...posix, fs }), /larger than 1 MB/, `reported size ${size}`);
+  }
 });
 
 test("on POSIX a config or doc file that another user owns is refused", { skip: typeof process.getuid !== "function" }, () => {
   const other = process.getuid() + 1;
-  assert.throws(() => resolveConfig("/repo", { fs: fakeFs({ "/repo/.git": null, "/repo/.sprintree.json": '{"project":"SPD"}' }, { uid: other }) }), /not owned by the current user/);
+  assert.throws(() => resolveConfig("/repo", { ...posix, fs: fakeFs(cfgFiles, { uid: other }) }), /not owned by the current user/);
   const warns = [];
-  assert.equal(findDocKey("/repo", { fs: fakeFs({ "/repo/.git": null, "/repo/AGENTS.md": "https://sprintree.com/p/ABC" }, { uid: other }), warn: (l) => warns.push(l) }), null);
+  assert.equal(findDocKey("/repo", { ...posix, fs: fakeFs({ "/repo/.git": null, "/repo/AGENTS.md": "https://sprintree.com/p/ABC" }, { uid: other }), warn: (l) => warns.push(l) }), null);
   assert.match(warns.join("\n"), /AGENTS\.md: not owned/);
 });
 
@@ -811,17 +943,16 @@ test("doc files: a symlink to a regular file inside the repo is read, one that l
   assert.ok(!/replace|put a regular file/i.test(h.errs.join("\n")));
 });
 
-test("doc files: a link to /dev/zero and a FIFO are skipped at once and never read", { skip: win, timeout: 20000 }, async () => {
+test("doc files: a link to /dev/zero and a FIFO are skipped at once and never read (child process with a timeout, so a regression fails instead of hanging)", { skip: win }, () => {
   const root = tmpRepo({ "GEMINI.md": "https://sprintree.com/p/GEM" });
   symlinkSync("/dev/zero", path.join(root, "AGENTS.md"));
   execFileSync("mkfifo", [path.join(root, "CLAUDE.md")]);
-  const h = harness(() => null, { env: {}, cwd: root });
-  const t0 = Date.now();
-  assert.equal(await h.go(["key"]), 0);
-  assert.ok(Date.now() - t0 < 5000, "must not read the target");
-  assert.deepEqual(h.lines, ["GEM"]);
-  assert.match(h.errs.join("\n"), /AGENTS\.md: resolves outside the repo/);
-  assert.match(h.errs.join("\n"), /CLAUDE\.md: not a regular file/);
+  const r = spawnSync(process.execPath, [ST, "key"], { cwd: root, encoding: "utf8", timeout: 10000, env: childEnv() });
+  assert.equal(r.error, undefined, `did not finish: ${r.error}`);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout.trim(), "GEM");
+  assert.match(r.stderr, /AGENTS\.md: resolves outside the repo/);
+  assert.match(r.stderr, /CLAUDE\.md: not a regular file/);
 });
 
 test("a hard-linked .sprintree.json and an oversized .sprintree.json or doc file are refused (also on Windows)", async () => {
@@ -945,13 +1076,18 @@ test("invisible characters are stripped from server text, tool names and error m
   assert.equal(await h.go(["call", "x", "{}"]), 0);
   assert.deepEqual(h.lines, ["abcde1234"]);
   assert.equal(stripControls("x\u001b[2Jy\u202ez\u200b"), "xyz");
+  // fillers that print as nothing, the hieroglyph format controls (Cf only from Unicode 15: listed by hand) and the tag block
+  assert.equal(stripControls("a\uffa0b\u17b4c\u17b5d\u034fe\u{13430}f\u{13439}g\u{1343f}h\u{e0000}i\u{e0001}j"), "abcdefghij");
+  // the line and paragraph separators and the braille blank become a space (the server refuses them in a name)
+  assert.equal(stripControls("a\u2028b\u2029c\u2800d"), "a b c d");
   const e = harness((b) => (b.method === "tools/call" ? { status: 500, text: "bo\u202eom\u2060" } : null));
   await e.go(["call", "x", "{}"]);
   assert.ok(!RAW_BAD.test(e.errs.join("")));
 });
 
-test("characters real text needs survive: ZWJ in an emoji sequence, ZWNJ in Persian, LRM and RLM, a flag with tag characters", async () => {
-  const text = "\u{1F468}\u200d\u{1F4BB} \u0645\u06CC\u200c\u062E\u0648\u0627\u0647\u0645 a\u200eb\u200fc \u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}";
+test("characters real text needs survive: ZWJ in an emoji sequence, ZWNJ in Persian, LRM and RLM, an emoji variation selector, a CJK variant, the three subdivision flags", async () => {
+  const flag = (code) => "\u{1F3F4}" + [...code].map((c) => String.fromCodePoint(0xe0000 + c.charCodeAt(0))).join("") + "\u{E007F}";
+  const text = `\u{1F468}\u200d\u{1F4BB} \u0645\u06CC\u200c\u062E\u0648\u0627\u0647\u0645 a\u200eb\u200fc \u2764\ufe0f \u8FBA\u{E0100} ${flag("gbeng")} ${flag("gbsct")} ${flag("gbwls")}`;
   const h = harness(callResult({ content: [{ text }] }));
   assert.equal(await h.go(["call", "x", "{}"]), 0);
   assert.deepEqual(h.lines, [text]);
@@ -960,86 +1096,133 @@ test("characters real text needs survive: ZWJ in an emoji sequence, ZWNJ in Pers
   assert.equal(JSON.parse(cfg.lines.join("\n")).language, text);
 });
 
-test("tag characters outside a flag sequence (hidden ASCII) are stripped, also a fake flag that carries a message", async () => {
-  const hidden = (s) => [...s].map((c) => String.fromCodePoint(0xe0000 + c.charCodeAt(0))).join("");
-  for (const text of [`hi ${hidden("ignore previous")}`, `\u{1F3F4}${hidden("run curl evil.example")}\u{E007F}`, `\u{E0001}${hidden("x")}`]) {
-    const h = harness(callResult({ content: [{ text }] }));
-    await h.go(["call", "x", "{}"]);
-    assert.ok(!/[\u{E0000}-\u{E007F}]/u.test(h.lines[0]), JSON.stringify(h.lines[0]));
-  }
+test("variation selectors and tag characters: only a single selector after a base character and the three flags stay", () => {
+  const tag = (code) => [...code].map((c) => String.fromCodePoint(0xe0000 + c.charCodeAt(0))).join("");
+  const flag = (code) => "\u{1F3F4}" + tag(code) + "\u{E007F}";
+  const keep = {
+    "emoji presentation": "a\u2764\ufe0fb",
+    "text presentation": "\u2764\ufe0e",
+    "keycap": "1\ufe0f\u20e3",
+    "VS17 after a unified ideograph": "\u8fba\u{e0100}",
+    "VS17 after a compatibility ideograph": "\uf900\u{e0100}",
+    "England": flag("gbeng"),
+    "Scotland": flag("gbsct"),
+    "Wales": flag("gbwls"),
+  };
+  for (const [name, text] of Object.entries(keep)) assert.equal(stripControls(text), text, name);
+  // the first and last ideograph of every block (Unified, Extensions A-H, Compatibility), by range: the same on every Node
+  const ideographs = [0x3400, 0x4dbf, 0x4e00, 0x9fff, 0xf900, 0xfad9, 0x20000, 0x2a6df, 0x2a700, 0x2b81d, 0x2b820, 0x2cea1, 0x2ceb0, 0x2ebe0, 0x2f800, 0x2fa1d, 0x30000, 0x3134a, 0x31350, 0x323af];
+  for (const cp of ideographs) assert.equal(stripControls(String.fromCodePoint(cp, 0xe0100)), String.fromCodePoint(cp, 0xe0100), cp.toString(16));
+  for (const cp of [0x33ff, 0x4dc0, 0xa000, 0x1f600, 0x3042]) assert.equal(stripControls(String.fromCodePoint(cp, 0xe0100)), String.fromCodePoint(cp), `${cp.toString(16)} is no ideograph`);
+  const strip = {
+    "a run of selectors": ["a\ufe0f\ufe0fb", "ab"],
+    "a leading selector": ["\ufe0fa", "a"],
+    "after a space": ["a \ufe0f", "a "],
+    "after a zero-width space": ["a\u200b\ufe0fb", "ab"],
+    "after a ZWJ": ["\u{1F468}\u200d\ufe0f", "\u{1F468}\u200d"],
+    "VS17 after a letter": ["a\u{e0100}", "a"],
+    "VS17 run after an ideograph": ["\u8fba\u{e0100}\u{e0101}", "\u8fba"],
+    "VS17 then VS1 after an ideograph": ["\u8fba\u{e0100}\ufe0f", "\u8fba"],
+    "VS1 after a hidden filler": ["\u3164\ufe0f", ""],
+    "hidden ASCII in selectors": ["safe" + [..."RUN rm"].map((c) => String.fromCodePoint(0xe0100 + c.charCodeAt(0))).join(""), "safe"],
+    "a fake flag that spells a command": [flag("rmrf") + flag("curl9x"), "\u{1F3F4}\u{1F3F4}"],
+    "a flag-shaped region code": [flag("gbxyz"), "\u{1F3F4}"],
+    "a flag without its cancel tag": ["\u{1F3F4}" + tag("gbeng"), "\u{1F3F4}"],
+    "a flag with an extra tag": ["\u{1F3F4}" + tag("gbengx") + "\u{E007F}", "\u{1F3F4}"],
+    "tags with no flag": ["hi " + tag("ignore previous") + "\u{E0001}", "hi "],
+  };
+  for (const [name, [text, want]] of Object.entries(strip)) assert.equal(stripControls(text), want, name);
 });
 
-test("a refusal is exit 1 even when the server hides the Error: prefix behind control sequences or invisible characters", async () => {
+test("a refusal is exit 1 even when the server hides the Error: prefix behind control sequences or invisible characters, the kept ones included", async () => {
   const tag = String.fromCodePoint(0xe0020);
-  for (const text of ["\u001b[0mError: nope", "\u001b]\u0007Error: nope", "\u200bError: nope", "\u009bError: nope", "\u2060Error: nope", `${tag}Error: nope`, "\ufeffError: nope", "\u00adError: nope"]) {
+  const hidden = ["\u001b[0m", "\u001b]\u0007", "\u200b", "\u009b", "\u2060", tag, "\ufeff", "\u00ad", "\u200c", "\u200d", "\u200e", "\u200f", "\ufe0f", "\u{e0100}", "\u2800", "\u3164"];
+  for (const text of [...hidden.map((h) => `${h}Error: nope`), "E\u200drror: nope", "Error\u200e: nope", "\u200d\u200c Error: nope"]) {
     const h = harness(callResult({ content: [{ text }] }));
     assert.equal(await h.go(["call", "x", "{}"]), 1, JSON.stringify(text));
+    assert.ok(h.lines[0].includes("rror"), "the text is still printed");
   }
+  const fine = harness(callResult({ content: [{ text: "\u200dan Error: in the middle" }] }));
+  assert.equal(await fine.go(["call", "x", "{}"]), 0);
 });
 
 // ---- tokens ----------------------------------------------------------------------------------
 
-test("tokens of all three families (itn_, itna_, itnr_) are redacted from server text, whether or not they are the configured one", async () => {
-  const body = "A1b-_".repeat(6);
-  for (const prefix of ["itn_", "itna_", "itnr_"]) {
-    const h = harness(callResult({ content: [{ text: `leak ${prefix}${body} end` }] }), { env: { SPRINTREE_TOKEN: "unrelated_token_000" } });
-    assert.equal(await h.go(["call", "x", "{}"]), 0);
-    assert.deepEqual(h.lines, ["leak [token] end"], prefix);
-  }
-  const other = harness(callResult({ content: [{ text: `itn_short and itnx_${body}` }] }));
-  await other.go(["call", "x", "{}"]);
-  assert.deepEqual(other.lines, [`itn_short and itnx_${body}`]);
-});
-
-test("token shapes: after a non-letter or a separator it is redacted, glued to a word it is not a token", async () => {
-  const body = "d".repeat(24);
-  const cases = {
-    [`SPRINTREE_TOKEN_itn_${body}`]: "SPRINTREE_TOKEN_[token]",
-    [`_itn_${body}_`]: "_[token]",
-    [`token=itn_${body};`]: "token=[token];",
-    [`keyitn_${body}`]: `keyitn_${body}`,
-    [`9itna_${body}`]: `9itna_${body}`,
-  };
-  for (const [text, want] of Object.entries(cases)) {
-    const h = harness(callResult({ content: [{ text }] }));
-    await h.go(["call", "x", "{}"]);
-    assert.deepEqual(h.lines, [want], text);
+test("token shapes (TOKEN_CASES, also run against the gitleaks rule): redacted whichever way they are written, a look-alike is left alone", async () => {
+  for (const [name, text, token, want] of TOKEN_CASES) {
+    const h = harness(callResult({ content: [{ text }] }), { env: { SPRINTREE_TOKEN: "unrelated_token_000" } });
+    assert.equal(await h.go(["call", "x", "{}"]), 0, name);
+    assert.deepEqual(h.lines, [want], `${name}: ${text}`);
+    assert.equal(token === null, want === text, name);
   }
 });
 
-test("a token with an invisible character or an escape sequence inside is redacted too (cleaning comes first)", async () => {
+test("a token with an invisible character, a kept one included, or an escape sequence inside is redacted too (cleaning comes first)", async () => {
   const body = "e".repeat(24);
-  for (const text of [`itn_${"e".repeat(10)}\u200b${"e".repeat(14)}`, `x \u001b[0mitn_${body}`, `\u2060itn_${body}`, `itn_${"e".repeat(10)}${String.fromCodePoint(0xe0041)}${"e".repeat(14)}`]) {
+  const inside = ["\u200b", "\u200c", "\u200d", "\u200e", "\u200f", "\ufe0f", "\u2060", String.fromCodePoint(0xe0041), "\u001b[0m"];
+  for (const mark of inside) {
+    const h = harness(callResult({ content: [{ text: `itn_${"e".repeat(10)}${mark}${"e".repeat(14)}` }] }));
+    await h.go(["call", "x", "{}"]);
+    assert.deepEqual(h.lines, ["[token]"], JSON.stringify(mark));
+  }
+  for (const text of [`x \u001b[0mitn_${body}`, `\u2060itn_${body}`, `\u200ditn_${body}`]) {
     const h = harness(callResult({ content: [{ text }] }));
     await h.go(["call", "x", "{}"]);
     assert.ok(h.lines[0].includes("[token]") && !h.lines[0].includes("eeeeee"), JSON.stringify(h.lines[0]));
+  }
+  // what is around the token keeps its kept characters
+  const around = harness(callResult({ content: [{ text: `a\u200d itn_${body}\u200e b` }] }));
+  await around.go(["call", "x", "{}"]);
+  assert.deepEqual(around.lines, ["a\u200d [token]\u200e b"]);
+});
+
+test("the configured token is redacted in plain, encoded and invisible-character form, whatever it looks like", async () => {
+  const own = "spt_secret_value_123456";
+  const hex = [...own].map((c) => "%" + c.charCodeAt(0).toString(16)).join("");
+  for (const text of [`x ${own} y`, `x ${hex} y`, `x spt_secret\u200d_value_123456 y`, `x ${own.slice(0, 10)}\\u005f${own.slice(11)} y`]) {
+    const h = harness(callResult({ content: [{ text }] }), { env: { SPRINTREE_TOKEN: `Bearer ${own}` } });
+    await h.go(["call", "x", "{}"]);
+    assert.deepEqual(h.lines, ["x [token] y"], text);
   }
 });
 
 // ---- endpoint --------------------------------------------------------------------------------
 
-test("a host other than sprintree.com is named on stderr once, before the token goes there; the comparison ignores case", async () => {
+test("a host other than sprintree.com is named on stderr once, before the token goes there (the URL parser lower-cases the host, so SPRINTREE.COM is sprintree.com)", async () => {
   const other = harness(toolsList([]), { env: { SPRINTREE_TOKEN: TOKEN, SPRINTREE_MCP_URL: "https://mcp.example.test:8443/mcp" } });
   assert.equal(await other.go(["tools"]), 0);
   assert.equal(other.errs.length, 1);
   assert.match(other.errs[0], /mcp\.example\.test:8443/);
   assert.match(other.errs[0], /token/i);
   assert.ok(!other.errs[0].includes(TOKEN));
-  for (const url of ["https://sprintree.com/mcp", "https://SPRINTREE.COM/mcp", "https://Sprintree.Com/mcp"]) {
+  for (const url of ["https://sprintree.com/mcp", "https://SPRINTREE.COM/mcp"]) {
     const dflt = harness(toolsList([]), { env: { SPRINTREE_TOKEN: TOKEN, SPRINTREE_MCP_URL: url } });
     assert.equal(await dflt.go(["tools"]), 0);
     assert.deepEqual(dflt.errs, [], url);
   }
 });
 
-test("an invalid SPRINTREE_MCP_URL is shown without user:password@, a wrong scheme only as scheme and host", async () => {
-  for (const raw of ["https//user:hunter2@host.example/mcp", "https://user:hunter2@exa mple.test/mcp", "http://user:hunter2@evil.example/mcp"]) {
+test("a bad SPRINTREE_MCP_URL is never echoed with its user:password@ or its query: an unparsable one is not shown at all, a wrong scheme as scheme://host/path", async () => {
+  const bad = ["https//user:hunter2@host.example/mcp", "https://user:hunter2@exa mple.test/mcp", "https://exa mple.test/mcp?key=hunter2", "hunter2@exa mple.test"];
+  const wrongScheme = ["http://user:hunter2@evil.example/mcp?key=hunter2", "ftp://user:hunter2@evil.example/mcp#hunter2"];
+  for (const raw of [...bad, ...wrongScheme]) {
     const h = harness(() => null, { env: { SPRINTREE_TOKEN: TOKEN, SPRINTREE_MCP_URL: raw } });
     assert.equal(await h.go(["tools"]), 1, raw);
-    assert.ok(!h.errs.join("").includes("hunter2") && !h.errs.join("").includes("user:"), `${raw}: ${h.errs.join("")}`);
+    assert.equal(h.fetch.calls.length, 0, raw);
+    assert.ok(!/hunter2|user:|key=/.test(h.errs.join("")), `${raw}: ${h.errs.join("")}`);
     assert.match(h.errs[0], /SPRINTREE_MCP_URL/);
   }
-  assert.throws(() => checkMcpUrl("https://u:p@exa mple.test/"), (e) => !/u:p/.test(e.message));
+  assert.match(message(bad[1]), /not a valid URL: \[invalid URL\]/);
+  assert.match(message(wrongScheme[0]), /got http:\/\/evil\.example\/mcp$/);
+  assert.match(message(wrongScheme[1]), /got ftp:\/\/evil\.example\/mcp$/);
+  function message(raw) {
+    try {
+      checkMcpUrl(raw);
+    } catch (e) {
+      return e.message;
+    }
+    return "";
+  }
 });
 
 test("a network error without a cause code shows a short scrubbed cause message", async () => {
@@ -1116,9 +1299,3 @@ test("MIN_NODE: the runtime check and its message are built from the one constan
   }
 });
 
-test("the `key` hint names every doc file that is read and .sprintree.json", async () => {
-  const h = harness(() => null, { env: {}, cwd: tmpRepo() });
-  assert.equal(await h.go(["key"]), 1);
-  assert.match(h.errs[0], /AGENTS\.md, CLAUDE\.md, GEMINI\.md or \.claude\/CLAUDE\.md/);
-  assert.ok(h.errs[0].includes(".sprintree.json"));
-});
