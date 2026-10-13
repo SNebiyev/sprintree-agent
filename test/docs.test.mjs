@@ -133,11 +133,14 @@ test("the AGENTS.md template says where each client installs the skill, and the 
   assert.ok(flat(read(README)).includes(".agents/skills/sprintree/"), "README: Codex per-repo path");
 });
 
-test("the gitleaks rule reports what TOKEN_CASES says, in the decoded text, as group 1 (st.mjs redacts the same table), and it has the keywords", () => {
+test("the gitleaks rule reports what TOKEN_CASES says, in the decoded text, as group 1; st.mjs redacts at least that (a superset: it also hides a token glued to a word); the rule has the keywords", () => {
   const toml = read(".gitleaks.toml");
   const re = new RegExp(/regex = '''(.*)'''/.exec(toml)[1]);
   assert.match(toml, /secretGroup = 1/);
-  for (const [name, text, token] of TOKEN_CASES) assert.equal(re.exec(decodeEscapes(text))?.[1] ?? null, token, name);
+  for (const [name, text, token, redacted] of TOKEN_CASES) {
+    assert.equal(re.exec(decodeEscapes(text))?.[1] ?? null, token, name);
+    if (token !== null) assert.notEqual(redacted, text, `${name}: gitleaks flags it, st.mjs must redact it`);
+  }
   for (const prefix of ["itn_", "itna_", "itnr_"]) assert.ok(toml.includes(`"${prefix}"`), `keyword ${prefix}`);
 });
 

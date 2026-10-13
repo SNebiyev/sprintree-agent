@@ -43,10 +43,12 @@ export function mockFetch(handler, { session = false } = {}) {
 /** A child-process environment: the real one (Windows needs SystemRoot and friends) plus overrides. */
 export const childEnv = (extra = {}) => ({ ...process.env, SPRINTREE_TOKEN: "", ...extra });
 
-const BODY = "Ab1-_".repeat(6);
+/** A 30-character token body (every body character class). */
+export const BODY = "Ab1-_".repeat(6);
 /**
- * Token shapes, run against the redaction of st.mjs and against the gitleaks rule (.gitleaks.toml), which must agree:
- * [name, text, the token the rule reports in the decoded text (null: not a token), the text after st.mjs redacted it].
+ * Token shapes, run against the redaction of st.mjs and against the gitleaks rule (.gitleaks.toml). st.mjs hides a superset of what gitleaks flags:
+ * [name, text, the token the gitleaks rule reports in the decoded text (null: it reports nothing), the text after st.mjs redacted it].
+ * Wherever the rule reports a token st.mjs redacts it; a token glued to a word is hidden by st.mjs only (the rule skips it).
  */
 export const TOKEN_CASES = [
   ["PAT", `leak itn_${BODY} end`, `itn_${BODY}`, "leak [token] end"],
@@ -56,8 +58,17 @@ export const TOKEN_CASES = [
   ["after = and before ;", `token=itn_${BODY};`, `itn_${BODY}`, "token=[token];"],
   ["after an underscore", `SPRINTREE_TOKEN_itn_${BODY}`, `itn_${BODY}`, "SPRINTREE_TOKEN_[token]"],
   ["between underscores", `_itn_${BODY}_`, `itn_${BODY}_`, "_[token]"],
-  ["glued to a word", `keyitn_${BODY}`, null, `keyitn_${BODY}`],
-  ["glued to a digit", `9itna_${BODY}`, null, `9itna_${BODY}`],
+  ["a letter, a kept joiner, then the token (the joiner ends the word)", `a\u200ditn_${BODY}`, `itn_${BODY}`, "a\u200d[token]"],
+  ["a digit, a kept LRM, then the token", `9\u200eitna_${BODY}`, `itna_${BODY}`, "9\u200e[token]"],
+  ["a letter, a zero-width space (removed), then the token", `a\u200bitn_${BODY}`, `itn_${BODY}`, "a[token]"],
+  ["a letter, a C0 control (removed), then the token", `a\u0001itn_${BODY}`, `itn_${BODY}`, "a[token]"],
+  ["a letter, a soft hyphen (removed), then the token", `a\u00aditn_${BODY}`, `itn_${BODY}`, "a[token]"],
+  ["a letter, a C1 control (removed), then the token", `a\u0085itn_${BODY}`, `itn_${BODY}`, "a[token]"],
+  ["a letter, a tag character (removed), then the token", `a\u{e0041}itn_${BODY}`, `itn_${BODY}`, "a[token]"],
+  ["glued to a word (st.mjs only: gitleaks skips it)", `keyitn_${BODY}`, null, "key[token]"],
+  ["glued to a digit (st.mjs only)", `9itna_${BODY}`, null, "9[token]"],
+  ["glued to a single letter (st.mjs only)", `aitn_${BODY}`, null, "a[token]"],
+  ["glued to a word, then an escaped underscore (st.mjs only)", `keyitnr%5F${BODY}`, null, "key[token]"],
   ["another prefix", `itnx_${BODY}`, null, `itnx_${BODY}`],
   ["too short", "itn_short", null, "itn_short"],
   ["19 characters are too few", `itn_${"a".repeat(19)}`, null, `itn_${"a".repeat(19)}`],
@@ -81,10 +92,10 @@ export const TOKEN_CASES = [
   ["a \\u escape of a non-ASCII letter before it", `x\\u00e9itn_${BODY}`, `itn_${BODY}`, `x\\u00e9[token]`],
   ["a quote written as \\u201c before it", `x\\u201citn_${BODY}`, `itn_${BODY}`, `x\\u201c[token]`],
   ["a \\u escape decodes any code unit, U+0000 too", `x\\u0000itn_${BODY}`, `itn_${BODY}`, `x\\u0000[token]`],
-  ["one byte of a multi-byte character is not decoded (gitleaks leaves it)", `x%C3itn_${BODY}`, null, `x%C3itn_${BODY}`],
-  ["a byte above DEL is not decoded", `x%C1itn_${BODY}`, null, `x%C1itn_${BODY}`],
-  ["the controls U+0000-0008 are not decoded", `x%01itn_${BODY}`, null, `x%01itn_${BODY}`],
-  ["DEL is not decoded", `x%7Fitn_${BODY}`, null, `x%7Fitn_${BODY}`],
+  ["one byte of a multi-byte character is not decoded: glued to a digit or letter, st.mjs hides it, gitleaks does not", `x%C3itn_${BODY}`, null, "x%C3[token]"],
+  ["a byte above DEL is not decoded: glued to a digit or letter, st.mjs hides it, gitleaks does not", `x%C1itn_${BODY}`, null, "x%C1[token]"],
+  ["the controls U+0000-0008 are not decoded: glued to a digit or letter, st.mjs hides it, gitleaks does not", `x%01itn_${BODY}`, null, "x%01[token]"],
+  ["DEL is not decoded: glued to a digit or letter, st.mjs hides it, gitleaks does not", `x%7Fitn_${BODY}`, null, "x%7F[token]"],
   ["a decoded escape earlier in the text does not shift a later one", `x %41 %69tn_${BODY} y`, `itn_${BODY}`, "x %41 [token] y"],
   ["a tab is decoded", `x%09itn_${BODY}`, `itn_${BODY}`, `x%09[token]`],
   ["~ is decoded", `x%7Eitn_${BODY}`, `itn_${BODY}`, `x%7E[token]`],

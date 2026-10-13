@@ -22,7 +22,7 @@ rm -rf "$SCRATCH/gl" && git clone -q --no-local . "$SCRATCH/gl" && docker run --
 Negative control (must FAIL and name the sprintree-token rule for each of these): in a throwaway git repo outside the worktree, commit a file with a fake
 `itn_`, `itna_` and `itnr_` token (one of them bare in prose), a token between underscores (`_itn_...._`), one after an underscore
 (`SPRINTREE_TOKEN_itn_....`), a percent-encoded one (`Bearer%20itn_....`, `token%3Ditnr_....`) and a `\u005f`-escaped one (`itna\u005f....`), plus a line of plain prose,
-`keyitn_....` and `itnac_....` that must NOT be flagged (a token never continues a word). Run the same gitleaks command
+`keyitn_....` and `itnac_....` that must NOT be flagged (that is the gitleaks rule only: it skips a token glued to a word, while st.mjs hides that one too). Run the same gitleaks command
 with `--config /repo/.gitleaks.toml` copied there and read the findings (rule, line), not just the exit code.
 The tools are pinned (actionlint 1.7.12, gitleaks v8.30.1, Node 18.7.0 and 24.21.0): bump them on purpose, in a commit of their own, and re-run the negative control.
 Evidence is the output (`# pass N`, `# fail 0`, `no leaks found`), not the exit code. Keep this a superset of `.github/workflows/test.yml`.

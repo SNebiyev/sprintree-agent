@@ -9,7 +9,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   run, resolveConfig, isMainModule, VERSION, ancestors, repoRoot, checkMcpUrl, MIN_NODE, KNOWN_CONFIG_KEYS, listTools, stripControls, findDocKey, DOC_NAMES,
 } from "../skills/sprintree/scripts/st.mjs";
-import { tmpDir, reply, mockFetch, childEnv, TOKEN_CASES } from "../test-support/helpers.mjs";
+import { tmpDir, reply, mockFetch, childEnv, BODY, TOKEN_CASES, decodeEscapes } from "../test-support/helpers.mjs";
 
 const TOKEN = "spt_secret_value_123456";
 const ST = fileURLToPath(new URL("../skills/sprintree/scripts/st.mjs", import.meta.url));
@@ -57,6 +57,12 @@ function harness(handler, { env = { SPRINTREE_TOKEN: TOKEN }, cwd = process.cwd(
 const toolsList = (tools) => (b) => (b.method === "tools/list" ? reply(b, { tools }) : null);
 const callResult = (result) => (b) => (b.method === "tools/call" ? reply(b, result) : null);
 const okCall = callResult({ content: [{ text: "done" }] });
+/** What one tool answer `text` prints when the configured token is `own`. */
+async function echo(own, text) {
+  const h = harness(callResult({ content: [{ text }] }), { env: { SPRINTREE_TOKEN: own } });
+  await h.go(["call", "x", "{}"]);
+  return h.lines[0];
+}
 
 // ---- basics ----------------------------------------------------------------------------------
 
@@ -992,15 +998,15 @@ test("the reader refuses an opened descriptor that is not a regular file (a FIFO
   assert.throws(() => resolveConfig("/repo", { ...posix, fs: fakeFs(cfgFiles, { notFileOnFstat: true }) }), /not a regular file/);
 });
 
-test("at most 1 MB is read, in as many reads as the OS needs, whatever size the file reports (a procfs file reports 0)", () => {
+test("at most 1 MiB is read, in as many reads as the OS needs, whatever size the file reports (a procfs file reports 0)", () => {
   const json = (n) => '{"project":"SPD","pad":"' + "y".repeat(n - '{"project":"SPD","pad":""}'.length) + '"}';
   const files = (text) => ({ "/repo/.git": null, "/repo/.sprintree.json": text });
   const MB = 1024 * 1024;
   for (const chunk of [Infinity, 64 * 1024]) {
-    assert.equal(resolveConfig("/repo", { ...posix, fs: fakeFs(files(json(MB)), { chunk }) }).project, "SPD", `exactly 1 MB is fine, ${chunk} bytes a read`);
+    assert.equal(resolveConfig("/repo", { ...posix, fs: fakeFs(files(json(MB)), { chunk }) }).project, "SPD", `exactly 1 MiB is fine, ${chunk} bytes a read`);
     for (const size of [undefined, 0]) {
       const fs = fakeFs(files(json(MB + 1)), { sizes: { "/repo/.sprintree.json": size }, chunk });
-      assert.throws(() => resolveConfig("/repo", { ...posix, fs }), /larger than 1 MB/, `reported size ${size}, ${chunk} bytes a read`);
+      assert.throws(() => resolveConfig("/repo", { ...posix, fs }), /larger than 1 MiB/, `reported size ${size}, ${chunk} bytes a read`);
     }
   }
 });
@@ -1149,7 +1155,7 @@ test("warning lines read as sentences: one key or several, one file or several",
   assert.match(many.errs[0], /has keys that look like tokens \(token, secret\)\./);
   const skipped = harness(() => null, { env: {}, cwd: tmpRepo({ "AGENTS.md": "x".repeat(1024 * 1024 + 10), "GEMINI.md": "https://sprintree.com/p/GEM" }) });
   await skipped.go(["key"]);
-  assert.match(skipped.errs[0], /^Warning: skipped .*AGENTS\.md: larger than 1 MB$/);
+  assert.match(skipped.errs[0], /^Warning: skipped .*AGENTS\.md: larger than 1 MiB$/);
 });
 
 test("config output: C1 and DEL are escaped as \\u00XX, invisible characters are removed, the value survives", async () => {
@@ -1198,6 +1204,12 @@ test("ZWJ, ZWNJ, LRM and RLM: one between two visible characters stays, only the
     "Persian, one ZWNJ": "\u0645\u06CC\u200c\u062E\u0648\u0627\u0647\u0645",
     "LRM and RLM": `a${LRM}b${RLM}c`,
     "one of each, apart": `a${ZWNJ}b${ZWJ}c${LRM}d${RLM}e`,
+    // a combining mark (Mn, Mc) belongs to the visible character before it, so a virama and a joiner sit inside a visible character
+    "Devanagari: a virama and a ZWJ": "क्‍ष",
+    "Devanagari: a virama and a ZWNJ": "क्‌ष",
+    "Malayalam chillu sequence before the next letter": "ണ്‍ക",
+    "an accented Latin letter and a joiner": "é‍x",
+    "a spacing mark (Mc) and a joiner": "का‍ष",
   };
   for (const [name, text] of Object.entries(same)) assert.equal(stripControls(text), text, name);
   const changed = {
@@ -1212,7 +1224,12 @@ test("ZWJ, ZWNJ, LRM and RLM: one between two visible characters stays, only the
     "after a line break": [`a\n${LRM}b`, "a\nb"],
     "beside a space": [`a ${ZWJ}b${ZWNJ} c`, `a b c`],
     "beside a tab": [`a\t${RLM}b`, "a\tb"],
-    "after a combining mark": [`e\u0301${ZWJ}x`, `e\u0301x`],
+    "after a mark that stands alone (no visible character before it)": [`a \u0301${ZWJ}b`, `a \u0301b`],
+    "after a mark that follows a line break": [`a\n\u0301${ZWJ}b`, `a\n\u0301b`],
+    "a hidden character between a letter and its mark does not cut the mark off": [`a${ZWSP}\u0301${ZWJ}x`, `a\u0301${ZWJ}x`],
+    "a chain of two joiners after a mark keeps one": [`\u0915\u094d${ZWJ}${ZWJ}\u0937`, `\u0915\u094d${ZWJ}\u0937`],
+    "a run after a mark keeps the first": [`\u0915\u094d${ZWNJ}${ZWJ}\u0937`, `\u0915\u094d${ZWNJ}\u0937`],
+    "at the end after a mark": [`\u0915\u094d${ZWJ}`, `\u0915\u094d`],
     "before a combining mark": [`x${ZWJ}\u0301`, `x\u0301`],
     "a selector after the joiner is removed, the joiner has its visible neighbours": [`a${ZWJ}\ufe0fb`, `a${ZWJ}b`],
     "after a control sequence": [`\u001b[0m${ZWJ}a`, "a"],
@@ -1287,7 +1304,7 @@ test("every format character and every default-ignorable code point is removed, 
     if (stripControls(`a${ch}b`) !== "ab") assert.fail(`U+${cp.toString(16)} is not removed`);
   }
   assert.ok(checked > 3500, `only ${checked} code points checked`);
-  // Cf only from Unicode 15 (Node 18.7.0 has 14), so listed by hand: the hieroglyph format controls; the Mongolian selectors by name too
+  // listed by hand: U+13439-1343F are Cf only from Unicode 15 (Node 18.7.0 has 14; U+13430-13438 are Cf since Unicode 12); the Mongolian selectors by name too
   for (const cp of [0x180b, 0x180c, 0x180d, 0x180f, 0x13430, 0x13439, 0x1343f]) assert.equal(stripControls(`a${String.fromCodePoint(cp)}b`), "ab", cp.toString(16));
 });
 
@@ -1326,12 +1343,12 @@ test("a refusal is exit 1 even when the server hides the Error: prefix behind co
 
 // ---- tokens ----------------------------------------------------------------------------------
 
-test("token shapes (TOKEN_CASES, also run against the gitleaks rule): redacted whichever way they are written, a look-alike is left alone", async () => {
+test("token shapes (TOKEN_CASES, also run against the gitleaks rule): redacted whichever way they are written and whatever stands before them (a word too), a look-alike is left alone", async () => {
   for (const [name, text, token, want] of TOKEN_CASES) {
     const h = harness(callResult({ content: [{ text }] }), { env: { SPRINTREE_TOKEN: "unrelated_token_000" } });
     assert.equal(await h.go(["call", "x", "{}"]), 0, name);
     assert.deepEqual(h.lines, [want], `${name}: ${text}`);
-    assert.equal(token === null, want === text, name);
+    if (token !== null) assert.notEqual(want, text, `${name}: gitleaks flags it, so st.mjs redacts it`);
   }
 });
 
@@ -1364,68 +1381,96 @@ test("the configured token is redacted in plain, encoded and invisible-character
   }
 });
 
-test("the configured token is hidden whatever it looks like: with an escape or regex characters of its own, with a character outside the BMP, at its shortest; shorter than that it is not a secret", async () => {
-  const BODY = "Ab1-_".repeat(6);
-  const echo = async (own, text) => {
-    const h = harness(callResult({ content: [{ text }] }), { env: { SPRINTREE_TOKEN: own } });
-    await h.go(["call", "x", "{}"]);
-    return h.lines[0];
-  };
-  // once its own escapes are read it may be short: a form of fewer than 6 characters is no secret, and every level of its escapes counts
-  assert.equal(await echo("%41%42%43", "x ABC y %41%42%43 z"), "x ABC y [token] z");
-  assert.equal(await echo("s3cr%2541t-value-1234", "x s3crAt-value-1234 y s3cr%41t-value-1234 z"), "x [token] y [token] z");
-  for (const own of ["s3cr%41t-value-1234", "%41abc", "s3cr\\u0041t-value-1234", "a.b+c(d)[e]*f$g^h|i?j-1234", "tok\u{1f600}en-secret-9", "abcdef"]) {
+test("the configured token is hidden in every form the text reads as: encoded, as written beside an escape, split by a kept character; at its shortest; shorter than that it is not a secret", async () => {
+  for (const own of ["s3crAt-value-1234", "abcdef", "A1b2C3-_", "tok_secret-9"]) {
     assert.equal(await echo(own, `x ${own} y`), "x [token] y", `plain: ${own}`);
     assert.equal(await echo(own, `a\u200cb ${own} c\u200dd`), "a\u200cb [token] c\u200dd", `beside kept characters: ${own}`);
-    if (!/[%\\]/.test(own)) assert.equal(await echo(own, `a\u200cb ${own.slice(0, 3)}\u200d${own.slice(3)} y`), "a\u200cb [token] y", `split by a kept character: ${own}`);
+    assert.equal(await echo(own, `a\u200cb ${own.slice(0, 3)}\u200d${own.slice(3)} y`), "a\u200cb [token] y", `split by a kept character: ${own}`);
+    const hex = [...own].map((c) => "%" + c.charCodeAt(0).toString(16)).join("");
+    assert.equal(await echo(own, `x ${hex} y`), "x [token] y", `percent-encoded: ${own}`);
   }
-  // the form it has once its own escapes are read, and its regex characters stay plain characters
-  assert.equal(await echo("sp+t.(x)1234", "x sp%2Bt.(x)1234 y"), "x [token] y");
-  assert.equal(await echo("sp+t.(x)1234", "x sppppt.(x)1234 y spxt.(x)1234 y"), "x sppppt.(x)1234 y spxt.(x)1234 y");
+  // one character written as an escape, in the text and in the token's own form, at every level
+  assert.equal(await echo("s3crAt-value-1234", "x s3cr%41t-value-1234 y s3cr%2541t-value-1234 z"), "x [token] y [token] z");
+  // the token as written, right behind the first half of an escape: the view reads `%41abcdef` as `Aabcdef`, the token as written is still hidden
+  assert.equal(await echo("1abcdef", "x %41abcdef y"), "x %4[token] y");
   assert.equal(await echo("abcde", "x abcde y"), "x abcde y", "five characters are no secret");
-  // every match grows by one character (6 become 7): the result buffer must have room for that
-  assert.equal(await echo("abcdef", "abcdef".repeat(50)), "[token]".repeat(50));
-  assert.equal(await echo("abcdef", "abcdef\u200d".repeat(50) + "x"), "[token]\u200d".repeat(50) + "x");
+  // in the first pass (before the cleaning) every match grows by two characters (6 become 8: tag + mask), in the last by one (6 become 7):
+  // the result buffer must have room for that. This is the test that fails if `2 *` in `maskRuns` is reverted.
+  assert.equal(await echo("abcdef", "abcdef ".repeat(50)), "[token] ".repeat(50));
+  assert.equal(await echo("abcdef", "abcdef\u200d ".repeat(50) + "x"), "[token] ".repeat(50) + "x");
   assert.equal(await echo("abcdef", `x abcdef itn_${BODY} y`), "x [token] [token] y");
 });
 
-test("the configured token is hidden in every form the text reads as: with a kept joiner inside an escape of its own, encoded once more, as JSON wrote it, in its decoded form", async () => {
-  const echo = async (own, text) => {
-    const h = harness(callResult({ content: [{ text }] }), { env: { SPRINTREE_TOKEN: own } });
-    await h.go(["call", "x", "{}"]);
-    return h.lines[0];
-  };
-  const mine = "s3cr%41t-value-1234";
-  for (const text of ["s3cr%41t-value-1234", "s3cr%4\u200d1t-value-1234", "s3cr%2541t-value-1234", "s3cr%252541t-value-1234", "s3crAt-value-1234", "s3cr\\u0041t-value-1234", "s3cr\\\\u0041t-value-1234"]) {
+test("the Authorization header is `Bearer ` and the validated token, whichever way the \"Bearer\" prefix of SPRINTREE_TOKEN was separated (case, tab, NBSP, a line break)", async () => {
+  const tok = "AbCdEf-GhIjKl_9876";
+  for (const given of [tok, `Bearer ${tok}`, `bearer ${tok}`, `BEARER\t${tok}`, `Bearer\u00a0${tok}`, `bearer\n${tok}`, `  Bearer   ${tok}  `]) {
+    const h = harness(toolsList([]), { env: { SPRINTREE_TOKEN: given } });
+    assert.equal(await h.go(["tools"]), 0, JSON.stringify(given));
+    assert.equal(h.fetch.calls.at(-1).headers.Authorization, `Bearer ${tok}`, JSON.stringify(given));
+  }
+});
+
+test("a SPRINTREE_TOKEN that is not made of letters, digits, _ and - is refused at load, whatever the command, without echoing it (a real token is body only)", async () => {
+  for (const bad of ["AbCdEf.GhIjKl9876", "Bearer AbCdEf.GhIjKl9876", "s3cr%41t-value-1234", "tok en-secret-9", "tok\u{1f600}en-secret-9", "a+b(c)[d]*e", 'quo"ted-secret-12', "line-one\nline-two-secret"]) {
+    for (const argv of [["tools"], ["call", "x", "{}"], ["key"], ["config"]]) {
+      const h = harness(toolsList([]), { env: { SPRINTREE_TOKEN: bad } });
+      assert.equal(await h.go(argv), 1, `${argv[0]}: ${JSON.stringify(bad)}`);
+      assert.equal(h.fetch.calls.length, 0);
+      const err = h.errs.join("\n");
+      assert.match(err, /SPRINTREE_TOKEN must be letters, digits, _ and -/);
+      assert.ok(!err.includes("GhIjKl") && !err.includes("s3cr") && !err.includes("secret"), err);
+      assert.deepEqual(h.lines, []);
+    }
+  }
+  // `version` needs no token; a body-only one, also behind "Bearer ", an unset one and a short one load
+  assert.equal(await harness(() => null, { env: { SPRINTREE_TOKEN: "a.b" } }).go(["version"]), 0);
+  for (const good of ["AbCdEf-GhIjKl_9876", "Bearer AbCdEf-GhIjKl_9876", `  ${TOKEN}  `, "abc"]) {
+    assert.equal(await harness(toolsList([]), { env: { SPRINTREE_TOKEN: good } }).go(["tools"]), 0, good);
+  }
+});
+
+test("the configured token is hidden in every form the text reads as: with a kept joiner inside an escape of its own, encoded once more, in its decoded form; base64 and hex are not looked at", async () => {
+  const mine = "s3crAt-value-1234";
+  for (const text of ["s3crAt-value-1234", "s3cr%41t-value-1234", "s3cr%4\u200d1t-value-1234", "s3cr%2541t-value-1234", "s3cr%252541t-value-1234", "s3cr\\u0041t-value-1234", "s3cr\u0041t-value-1234"]) {
     assert.equal(await echo(mine, `x ${text} y`), "x [token] y", text);
   }
-  const json = "s3cr\\u0041t-value-1234"; // a token that holds a backslash-u escape itself
-  for (const text of ["s3cr\\u0041t-value-1234", "s3cr\\\\u0041t-value-1234", "s3crAt-value-1234", "s3cr%5Cu0041t-value-1234"]) {
-    assert.equal(await echo(json, `x ${text} y`), "x [token] y", text);
-  }
-  // what is NOT promised: base64 and hex of it, and a token of fewer than 6 characters
+  // what is NOT promised: base64 and hex of it
   const b64 = Buffer.from(mine).toString("base64");
   const hex = Buffer.from(mine).toString("hex");
   assert.equal(await echo(mine, `x ${b64} y ${hex} z`), `x ${b64} y ${hex} z`);
 });
 
-test("a 10 MB answer that is nothing but matches is cleaned in a small heap (a callback replace collects every match first)", { timeout: 120000 }, () => {
+// `tag` and `escbare` are smoke tests for dense input, not proof of the streaming change.
+test("a 10 MiB answer (over the body limit, which this test lifts) that is nothing but matches is cleaned in a small heap (a callback replace collects every match first)", { timeout: 120000 }, () => {
   const url = pathToFileURL(ST).href;
-  const kinds = { pct: "%41", uesc: "\\u0041", astral: "\u{1f600}\u{1f600}%41", zwj: "a\u200d", vs: "a\ufe0f", cjkvs: "\u4e2d\u{e0100}", zwsp: "\u200b", lone: "\ud800" };
+  const kinds = { pct: "%41", astral: "\u{1f600}\u{1f600}%41", zwj: "a\u200d", vs: "a\ufe0f", cjkvs: "\u4e2d\u{e0100}", zwsp: "\u200b", lone: "\ud800", realtok: `itn_${BODY} `, esc: "\u001b", esctok: `\u001b[1itn_${BODY} `, tag: "\ufdd0", escbare: "\u001bitn_" };
   for (const [kind, unit] of Object.entries(kinds)) {
     const code = `const { stripControls, run } = await import(${JSON.stringify(url)});
       const text = ${JSON.stringify(unit)}.repeat(Math.ceil(10 * 2 ** 20 / ${unit.length})).slice(0, 10 * 2 ** 20);
       const out = []; const f = async (u, init) => { const b = JSON.parse(init.body); const result = b.method === "initialize" ? {} : { content: [{ text }] };
         return { ok: true, status: 200, headers: new Map(), text: async () => (b.id ? JSON.stringify({ jsonrpc: "2.0", id: b.id, result }) : "") }; };
-      const code = await run(["call", "x", "{}"], { fetch: f, env: { SPRINTREE_TOKEN: "unrelated-token-0000" }, out: (s) => out.push(s.length), err: () => {} });
+      const code = await run(["call", "x", "{}"], { fetch: f, maxBody: Infinity, env: { SPRINTREE_TOKEN: "unrelated-token-0000" }, out: (s) => out.push(s.length), err: () => {} });
       if (code !== 0 || out.length !== 1) process.exit(3);`;
     const r = spawnSync(process.execPath, ["--max-old-space-size=300", "--input-type=module", "-e", code], { encoding: "utf8", timeout: 100000, env: childEnv() });
     assert.equal(r.status, 0, `${kind}: ${r.status} ${r.signal} ${r.stderr.slice(0, 300)}`);
   }
 });
 
+test("one token run of 8 MiB is redacted in a small heap, on the fast path and in the view, without a stack overflow in a regex", { timeout: 120000 }, () => {
+  const url = pathToFileURL(ST).href;
+  for (const [kind, mid] of [["plain", ""], ["view", "%41\u200b"]]) {
+    const code = `const { run } = await import(${JSON.stringify(url)});
+      const text = "x itn_" + ${JSON.stringify(mid)} + "A".repeat(8 * 2 ** 20) + " y";
+      const out = []; const f = async (u, init) => { const b = JSON.parse(init.body); const result = b.method === "initialize" ? {} : { content: [{ text }] };
+        return { ok: true, status: 200, headers: new Map(), text: async () => (b.id ? JSON.stringify({ jsonrpc: "2.0", id: b.id, result }) : "") }; };
+      const code = await run(["call", "x", "{}"], { fetch: f, maxBody: Infinity, env: { SPRINTREE_TOKEN: "unrelated-token-0000" }, out: (s) => out.push(s), err: (e) => out.push("ERR " + e) });
+      if (code !== 0 || out.length !== 1 || out[0] !== "x [token] y") { console.error(code, out.map((s) => s.slice(0, 200))); process.exit(3); }`;
+    const r = spawnSync(process.execPath, ["--max-old-space-size=300", "--input-type=module", "-e", code], { encoding: "utf8", timeout: 100000, env: childEnv() });
+    assert.equal(r.status, 0, `${kind}: ${r.status} ${r.signal} ${r.stderr.slice(0, 300)}`);
+  }
+});
+
 test("stricter than gitleaks, on purpose: a line gitleaks gives up on (one %XX it cannot decode) is still decoded for the others; an invisible character inside a token does not hide it", async () => {
-  const BODY = "Ab1-_".repeat(6);
   for (const text of [`x%C3 %20itn_${BODY}`, `x%01 %20itn_${BODY}`, `itn_${BODY.slice(0, 7)}\u200b${BODY.slice(7)}`]) {
     const h = harness(callResult({ content: [{ text }] }), { env: { SPRINTREE_TOKEN: "unrelated_token_000" } });
     await h.go(["call", "x", "{}"]);
@@ -1433,8 +1478,290 @@ test("stricter than gitleaks, on purpose: a line gitleaks gives up on (one %XX i
   }
 });
 
+test("a character that cleaning removes between a word and a token head leaves the token redacted, whichever character it is (every one of them, from Unicode)", async () => {
+  // every code point that stripControls removes from between two letters (controls, format characters, default-ignorables, tag characters)
+  const removable = [];
+  for (let cp = 0; cp <= 0x10ffff; cp++) {
+    if (cp >= 0xd800 && cp <= 0xdfff) continue;
+    const ch = String.fromCodePoint(cp);
+    if (stripControls(`a${ch}b`) === "ab") removable.push(ch);
+  }
+  assert.ok(removable.length > 4000, `${removable.length} removed code points`);
+  for (const ch of removable) {
+    const out = await echo("unrelated_token_000", `a${ch}itn_${BODY} z`);
+    assert.equal(out, "a[token] z", `U+${ch.codePointAt(0).toString(16)}: ${JSON.stringify(out)}`);
+  }
+});
+
+test("an ESC that stands right before a token (or the configured token) eats neither its first character nor the mask written for it: the text is also read as it came, before the escape sequences go", async () => {
+  const own = "spt_secret_value_123456";
+  for (const esc of ["\u001b", "\u001b[", "\u001b]", "\u001b ", "\u001b[0;1 "]) {
+    for (const token of [`itn_${BODY}`, `itna_${BODY}`, `itnr_${BODY}`, own]) {
+      assert.equal(await echo(own, `a ${esc}${token} b`), "a [token] b", `${JSON.stringify(esc)} ${token}`);
+    }
+  }
+  assert.equal(await echo(own, `a x\u001b${own} b`), "a x[token] b");
+  assert.equal(await echo(own, `a x\u001bitn_${BODY} b`), "a x[token] b");
+  // a sequence that ends before the token takes nothing of it
+  assert.equal(await echo(own, `x \u001b[0m itn_${BODY} y`), "x  [token] y");
+  assert.equal(await echo(own, `x \u001b[0mitn_${BODY} y`), "x [token] y");
+});
+
+test("a literal [token] in server text is printed as it is: only a mask this client wrote itself is merged with the token characters behind it", async () => {
+  for (const own of ["unrelated_token_000", "tok_secret-9"]) {
+    for (const text of ["see [token]s", "[token]-based auth", "x [token]_page_actions_0kpicgu y", "[token]abc", "a [token] b", "[token][token]x"]) {
+      assert.equal(await echo(own, text), text, text);
+    }
+    // what cleaning removes between a literal [token] and the characters behind it does not make them part of it
+    assert.equal(await echo(own, "[token]\u200e\u200etext"), "[token]\u200etext");
+    assert.equal(await echo(own, "[token]\u200btext"), "[token]text");
+    assert.equal(await echo(own, "[token]\u0001text"), "[token]text");
+    assert.equal(await echo(own, "[token]\u001b[0mtext"), "[token]text");
+  }
+  // a real token before it is masked, the literal [token] after it stays
+  assert.equal(await echo("unrelated_token_000", `itn_${BODY} [token]s`), "[token] [token]s");
+});
+
+test("U+FDD0 (the tag the first pass leaves for the second) in server text cannot make a literal [token] swallow what follows, and it is never printed", async () => {
+  const u = "unrelated_token_000";
+  assert.equal(await echo(u, "x \ufdd0[token]abcdef y"), "x \ufffd[token]abcdef y");
+  assert.equal(await echo(u, "x \ufdd0 y"), "x \ufffd y");
+  assert.equal(await echo(u, "\ufdd0"), "\ufffd");
+  assert.equal(await echo(u, `itn_${BODY}\ufdd0[token]abcdef`), "[token]\ufffd[token]abcdef");
+  assert.equal(await echo(u, "x\u200d\ufdd0[token]abcdef"), "x\u200d\ufffd[token]abcdef");
+  // written as an escape, at every level the view decodes: the text is printed as typed, the escape is no tag
+  for (const esc of ["\\ufdd0", "\\\\ufdd0", "\\uFDD0", "%255Cufdd0", "%5Cufdd0"]) {
+    assert.equal(await echo(u, `x ${esc}[token]abcdef y`), `x ${esc}[token]abcdef y`, esc);
+  }
+  for (const text of ["\ufdd0", "a\ufdd0b\ufdd0", `\ufdd0itn_${BODY}`, "\u001b\ufdd0[token]"]) {
+    assert.ok(!(await echo(u, text)).includes("\ufdd0"), JSON.stringify(text));
+  }
+  // the sentinel is a noncharacter: a private-use glyph (Nerd Fonts, EUDC) and a joiner between letters print as they are
+  assert.equal(await echo(u, "x \ue000 y \ue0b0 z"), "x \ue000 y \ue0b0 z");
+  assert.equal(await echo(u, "a\u200db"), "a\u200db");
+  assert.equal(await echo(u, "a\u200d\ue000"), "a\ue000");
+});
+
+test("an escape sequence right before a token head cannot eat the head's first character, the rest of the token is hidden (ESC [ 1 itn_, ESC itn_)", async () => {
+  const u = "unrelated_token_000";
+  const A10 = "A".repeat(10);
+  const B20 = "B".repeat(20);
+  for (const text of [`\u001b[1itn_${A10}\u001b[0m${B20}`, `\u001bitn_${A10}\u0001${B20}`, `x\u001b[1;2 itna_${A10}\u200b${B20}`, `\u001b(itnr_${A10}\u001b[0m${B20}`]) {
+    const out = await echo(u, text);
+    assert.ok(!/A{5}|B{5}|tn[ar]?_/.test(out), `${JSON.stringify(text)} -> ${JSON.stringify(out)}`);
+    assert.ok(out.includes("[token]"), JSON.stringify(out));
+  }
+});
+
+test("a head written with an escape (%69, \\u0069) right behind an ESC is hidden: the first pass reads the decoded view, before the ESC sequence takes the `%6` or the backslash", async () => {
+  const u = "unrelated_token_000";
+  for (const head of ["%69tn_", "\\u0069tn_", "%2569tn_", "i%74n_", "\\\\u0069tn_"]) {
+    for (const esc of ["\u001b", "\u001b[1"]) {
+      const out = await echo(u, `a ${esc}${head}${BODY} b`);
+      assert.ok(!out.includes("tn_" + BODY.slice(0, 16)) && !out.includes(BODY.slice(0, 16)), `${JSON.stringify(esc + head)} -> ${JSON.stringify(out)}`);
+    }
+  }
+  // the exact text of the two cases the review named
+  assert.ok(!(await echo(u, `\u001b%69tn_${BODY}`)).includes("tn_" + BODY.slice(0, 16)));
+  assert.ok(!(await echo(u, `\u001b\\u0069tn_${BODY}`)).includes("tn_" + BODY.slice(0, 16)));
+});
+
+test("a token after an escape sequence is redacted, also when the sequence takes its first character as the final byte or the parameter bytes stand right before it (ESC [ 1 itn_...)", async () => {
+  const u = "unrelated_token_000";
+  assert.equal(await echo(u, `a \u001b[1mitn_${BODY} b`), "a [token] b");
+  assert.equal(await echo(u, `a \u001b[1itn_${BODY} b`), "a [token] b");
+  assert.equal(await echo(u, `Token\u001b[1mitn_${BODY} z`), "Token[token] z");
+  assert.equal(await echo(u, `a \u001b[1;32itn_${BODY} b`), "a [token] b");
+  assert.equal(await echo(u, `a \u001b(1itn_${BODY} b`), "a [token] b");
+  // every code point before a sequence, and digits and intermediate bytes inside one: no token body is printed
+  for (let cp = 0; cp <= 0x7f; cp++) {
+    const c = String.fromCodePoint(cp);
+    const out = await echo(u, `${c}\u001b[1mitn_${BODY}`);
+    assert.ok(!out.includes("Ab1-_Ab1") && !out.includes("tn_"), `U+${cp.toString(16)}: ${JSON.stringify(out)}`);
+  }
+  for (const params of ["1", "12", "1;3", "0", "?25", "1 ", "9;9;9"]) {
+    const out = await echo(u, `a \u001b[${params}itn_${BODY} b`);
+    assert.ok(!out.includes("Ab1-_Ab1") && !out.includes("tn_"), `${params}: ${JSON.stringify(out)}`);
+  }
+});
+
+test("a token is hidden wherever it stands: behind a word, a digit, an escape sequence (also an unfinished one), an 8-bit CSI; and when cleaning joins its pieces", async () => {
+  const u = "unrelated_token_000";
+  // split by something cleaning removes, and glued to a word (the structural case: no exception for a word before the head)
+  const A = "A".repeat(10);
+  const B = "B".repeat(20);
+  for (const sep of ["\u001b[0m", "\u200b", "\u0001", "\u0000", "\u007f", "\u0085", "\u00ad", "\u2060", "\u{e0041}", "\u200d", "\u200e", "\ufe0f", "\u001b[0;1m"]) {
+    for (const head of ["x\u001b[1mitn_", "xitn_", "9\u200bitna_", "word\u0001itnr_"]) {
+      const out = await echo(u, `${head}${A}${sep}${B}`);
+      assert.ok(out.includes("[token]") && !/A{5}|B{5}/.test(out), `${JSON.stringify(head + A + sep + B)} -> ${JSON.stringify(out)}`);
+    }
+    assert.equal(await echo(u, `x\u001b[1mitn_${A}${sep}${B}`), "x[token]", JSON.stringify(sep));
+  }
+  // a C1 CSI in front of the head (cleaning removes only the CSI, its parameters print), and a head glued to a word, a letter or a digit
+  assert.equal(await echo(u, `\u009b1mitn_${BODY}`), "1m[token]");
+  assert.equal(await echo(u, `\u009bitn_${BODY}`), "[token]");
+  assert.equal(await echo(u, `key itn_${BODY} keyitn_${BODY} 9itna_${BODY} Zitnr_${BODY}`), "key [token] key[token] 9[token] Z[token]");
+});
+
+test("fuzz: 20k seeded random strings of escape sequences, controls, invisible characters, escapes and fake tokens never print a token-shaped run, any 20 characters of a token body or the configured token, in any decoded form", async () => {
+  const own = "Zq9_fuzz-secret-77";
+  let seed = 0x5eed1234;
+  const rnd = () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const pick = (a) => a[Math.floor(rnd() * a.length)];
+  const seps = ["", "\u001b", "\u001b[", "\u001b[1m", "\u001b[0m", "\u001b[1", "\u001b]0;", "\u001b(", "\u001bX", "\u009b", "\u009b1m", "\u0001", "\u0000", "\u007f", "\u0085", "\u200b", "\u200c", "\u200d", "\u200e", "\u00ad", "\u2060", "\ufe0f", "\u{e0041}", "\ufeff", " ", " ", "a", "9", "Token", "_", "-", "%", "%4", "\\u00", "\\u", "\u{1f600}", "[token]"];
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-";
+  const encode = (c) => {
+    const h = c.charCodeAt(0).toString(16).padStart(2, "0");
+    const r = rnd();
+    if (c === "%" || c === "\\") return c;
+    if (r < 0.4) return "%" + (rnd() < 0.5 ? h : h.toUpperCase());
+    if (r < 0.6) return "\\u00" + h;
+    if (r < 0.7) return "\\\\u00" + h;
+    if (r < 0.8) return "%25" + h;
+    return "%2525" + h;
+  };
+  /** `str` with a separator (of `among`) between some characters and some characters written as an escape. */
+  const mangle = (str, among = seps) => [...str].map((c) => (rnd() < 0.08 ? pick(among) : "") + (rnd() < 0.1 ? encode(c) : c)).join("");
+  const body = () => Array.from({ length: Math.floor(rnd() * 42) }, () => pick([...chars])).join("");
+  // A tracked token has a literal head (a head with something inside it, or written with escapes, can lose a character to an ESC sequence
+  // right before it when the body is only whole after cleaning: the documented residual, SECURITY.md), and a body in which anything that
+  // keeps the run going may stand (a visible character that is no token character ends the run, and what follows it is plain text).
+  // The other tokens, heads included, only have to leave no token-shaped run.
+  const bodySeps = seps.filter((x) => x !== "\u001b]0;" && !/^[ \u00a0\u2028%\\\u{1f600}]|^\[token\]/u.test(x));
+  const tracked = [];
+  let bodies = [];
+  const tokenPiece = () => {
+    const b = body();
+    if (b.length >= 20) bodies.push(b);
+    return pick(["itn_", "itna_", "itnr_"]) + mangle(b, bodySeps);
+  };
+  const piece = () => {
+    const r = rnd();
+    if (r < 0.25) return pick(seps);
+    if (r < 0.38) return tokenPiece();
+    if (r < 0.5) return mangle(pick(["itn_", "itna_", "itnr_"]) + body());
+    if (r < 0.6) return mangle(body());
+    if (r < 0.75) return mangle(own);
+    if (r < 0.85) return mangle(own.slice(0, 1 + Math.floor(rnd() * 12)));
+    return mangle(own.slice(Math.floor(rnd() * 8)));
+  };
+  const inputs = Array.from({ length: 20000 }, () => {
+    bodies = [];
+    const text = Array.from({ length: 1 + Math.floor(rnd() * 8) }, piece).join("");
+    tracked.push(bodies);
+    return text;
+  });
+  const printed = [];
+  for (let i = 0; i < inputs.length; i += 1000) {
+    const h = harness(callResult({ content: inputs.slice(i, i + 1000).map((text) => ({ text })) }), { env: { SPRINTREE_TOKEN: own } });
+    await h.go(["call", "x", "{}"]);
+    printed.push(...h.lines[0].split("\n"));
+  }
+  assert.equal(printed.length, inputs.length);
+  const invisible = /[\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}\u{13439}-\u{1343f}]/gu;
+  let masks = 0;
+  printed.forEach((out, i) => {
+    const seen = decodeEscapes(out.replace(invisible, ""));
+    if (out.includes("[token]")) masks++;
+    assert.ok(!/itn[ar]?_[A-Za-z0-9_-]{20,}/.test(seen) && !seen.includes(own), `${JSON.stringify(inputs[i])} -> ${JSON.stringify(out)}`);
+    for (const b of tracked[i]) {
+      for (let at = 0; at + 20 <= b.length; at++) {
+        assert.ok(!seen.includes(b.slice(at, at + 20)), `20 characters of the body ${b} printed: ${JSON.stringify(inputs[i])} -> ${JSON.stringify(out)}`);
+      }
+    }
+  });
+  assert.ok(masks > 5000, `the fuzz masks ${masks} of ${inputs.length} strings: it must really run into tokens`);
+});
+
+test("a control character inside a token (C0, C1, DEL: cleaning removes it) does not leave the rest of the token printed", async () => {
+  const controls = [];
+  for (let cp = 0; cp <= 0x9f; cp++) if (cp < 0x20 || cp >= 0x7f) if (stripControls(`a${String.fromCodePoint(cp)}b`) === "ab") controls.push(String.fromCodePoint(cp));
+  assert.ok(controls.length >= 60, `${controls.length} control code points`);
+  for (const c of controls) {
+    if (c === "\u001b") continue; // an ESC starts a sequence of its own: see the ESC tests
+    assert.equal(await echo("unrelated_token_000", `x itn_${BODY.slice(0, 20)}${c}Rest_of-it y`), "x [token] y", `U+${c.codePointAt(0).toString(16)}`);
+  }
+});
+
+test("the configured token is hidden together with the token characters that follow it, in the view and on the fast path (nothing makes it a separate token)", async () => {
+  const own = "spt_secret_value_123456";
+  // view path: an escape of its own underscore, a token right behind it
+  assert.equal(await echo(own, `x spt%5Fsecret_value_123456itna_${BODY} y`), "x [token] y");
+  assert.equal(await echo(own, `x spt%5Fsecret_value_123456\u200bitna_${BODY} y`), "x [token] y");
+  // fast path: no hidden character and no escape in the text
+  assert.equal(await echo(own, `x ${own}itna_${BODY} y`), "x [token] y");
+  assert.equal(await echo(own, `x ${own}rest-of_it y`), "x [token] y");
+});
+
+test("a response body is limited: a declared size over the limit, a body that grows past it (the rest is never read) and a text over it are refused with a clear error", async () => {
+  const MB = 1024 * 1024;
+  const env = { SPRINTREE_TOKEN: TOKEN };
+  const run1 = async (fetch, deps = {}) => {
+    const errs = [];
+    const lines = [];
+    const code = await run(["tools"], { fetch, env, out: (l) => lines.push(l), err: (e) => errs.push(e), ...deps });
+    return { code, errs, lines };
+  };
+  const stream = (chunks, { cancelled } = {}) => ({
+    getReader() {
+      let i = 0;
+      return {
+        read: async () => (i < chunks.length ? { done: false, value: chunks[i++] } : { done: true }),
+        cancel: async () => { cancelled.count++; },
+      };
+    },
+  });
+  // endless chunks of 1 MiB: only a limit on what is read ends this
+  const endless = { read: 0, cancelled: { count: 0 } };
+  const big = new Uint8Array(MB).fill(0x20);
+  const endlessFetch = async () => ({
+    ok: true,
+    status: 200,
+    headers: new Map(),
+    body: { getReader: () => ({ read: async () => (endless.read++, { done: false, value: big }), cancel: async () => { endless.cancelled.count++; } }) },
+    text: async () => assert.fail("the body is read as a stream, not as one text"),
+  });
+  const a = await run1(endlessFetch);
+  assert.equal(a.code, 1);
+  assert.match(a.errs.join(""), /response is larger than 8 MiB/);
+  assert.ok(endless.read <= 10, `${endless.read} chunks read`);
+  assert.equal(endless.cancelled.count, 1, "the stream is cancelled");
+  // a declared size over the limit is refused before a byte is read
+  let readCalls = 0;
+  const declared = await run1(async () => ({
+    ok: true, status: 200, headers: new Map([["content-length", String(9 * MB)]]),
+    body: { getReader: () => ({ read: async () => (readCalls++, { done: true }), cancel: async () => {} }) },
+    text: async () => assert.fail("not read"),
+  }));
+  assert.equal(declared.code, 1);
+  assert.match(declared.errs.join(""), /response is larger than 8 MiB/);
+  assert.equal(readCalls, 0);
+  // a client without a body stream (text() only): the text is measured in bytes, not in characters (a 3-byte character counts 3)
+  const only = await run1(async () => ({ ok: true, status: 200, headers: new Map(), text: async () => "\u200b".repeat(3 * MB) }));
+  assert.equal(only.code, 1);
+  assert.match(only.errs.join(""), /response is larger than 8 MiB/);
+  // the limit can be lowered for a test, and what is under it still works, a multi-byte character split between two chunks included
+  const enc = new TextEncoder().encode(JSON.stringify({ jsonrpc: "2.0", id: 1, result: {} }));
+  const cancelled = { count: 0 };
+  const ok = await run1(async (url, init) => {
+    const b = JSON.parse(init.body);
+    const payload = b.method === "initialize" ? enc : b.id ? new TextEncoder().encode(JSON.stringify({ jsonrpc: "2.0", id: b.id, result: { tools: [{ name: "caf\u00e9\u{1f600}", inputSchema: {} }] } })) : new Uint8Array();
+    const cut = payload.indexOf(0xc3) + 1 || 5; // inside the two bytes of \u00e9
+    return { ok: true, status: 200, headers: new Map(), body: stream([payload.slice(0, cut), payload.slice(cut)], { cancelled }) };
+  });
+  assert.equal(ok.code, 0, ok.errs.join(""));
+  assert.deepEqual(ok.lines, ["caf\u00e9\u{1f600}()"]);
+  const small = await run1(async () => ({ ok: true, status: 200, headers: new Map(), text: async () => " ".repeat(2000) }), { maxBody: 1000 });
+  assert.equal(small.code, 1);
+  assert.match(small.errs.join(""), /response is larger than 1000 bytes/);
+});
+
 test("a long text with a kept character and an escape is redacted at the right place (offsets beyond 16 bits)", async () => {
-  const BODY = "Ab1-_".repeat(6);
   const pad = "ab ".repeat(100000);
   const h = harness(callResult({ content: [{ text: `${pad}x\u200dy${pad}%69tn_${BODY} ${pad}x` }] }));
   await h.go(["call", "x", "{}"]);

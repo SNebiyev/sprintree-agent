@@ -12,10 +12,11 @@
  *   node st.mjs config [dir]               # print the resolved project config (only the known keys)
  *
  * Auth: set SPRINTREE_TOKEN to a personal access token (itn_..., Settings -> API & MCP -> Personal access tokens).
- * "Bearer " is added when missing. The token is never printed. SPRINTREE_MCP_URL overrides
+ * "Bearer " is added when missing. The token is never printed. It must be made of letters, digits, _ and - (a real token is);
+ * anything else is refused at load. SPRINTREE_MCP_URL overrides
  * the endpoint (default https://sprintree.com/mcp; must be https unless the host is
  * localhost, 127.0.0.1 or ::1; redirects are refused). SPRINTREE_TIMEOUT_MS sets the per-request
- * timeout (a whole number of ms from 1 to 600000, default 30000).
+ * timeout (a whole number of ms from 1 to 600000, default 30000). An answer over 8 MiB is refused while it is read.
  *
  * Text from a card or a comment is never typed into the shell: write it with the agent's own file-writing tool
  * into a fresh temp directory outside the repo, pass `@<absolute path>`, delete it afterwards (SKILL.md, Step 0).
@@ -25,8 +26,9 @@
  * keys are named on stderr as ignored, their values are never printed); a key that looks like a token only warns,
  * it does not make the file safe to commit secrets in. Everything printed (server text, config, warnings, errors)
  * is stripped of terminal control sequences and invisible characters first (`stripControls`; what real text needs stays: one
- * ZWJ, ZWNJ, LRM or RLM between two visible characters, a variation selector after a base character, the three subdivision flags),
- * and Sprintree tokens (itn_, itna_, itnr_, also percent-encoded or \u-escaped) are replaced by [token].
+ * ZWJ, ZWNJ, LRM or RLM between two visible characters (a combining mark belongs to the character before it), a variation selector after a base character, the three subdivision flags),
+ * and Sprintree tokens (itn_, itna_, itnr_, also percent-encoded or \u-escaped) are replaced by [token] wherever they stand, a token glued to a word
+ * included (stricter than .gitleaks.toml, which skips one: hiding a superset costs nothing).
  *
  * OAuth: this fallback client is PAT-only on purpose. When an agent connects the Sprintree MCP
  * server with OAuth, that session (access/refresh tokens) lives in the agent's own keychain and
@@ -56,6 +58,9 @@ const PROTOCOL_VERSION = "2025-06-18";
 // realpathSync.native: on Windows it also expands 8.3 short names, so two spellings of one directory compare equal.
 const REAL_FS = { existsSync, statSync, lstatSync, realpathSync: realpathSync.native, readlinkSync, readSync, openSync, fstatSync, closeSync, constants: FS_CONSTANTS };
 const MAX_TEXT_BYTES = 1024 * 1024; // config and doc files are small; anything bigger is not one
+// An answer is read into memory, cleaned (several copies and index arrays) and printed: 8 MiB is far more than a paged tool answer needs,
+// and the cleaning of 8 MiB stays under a few hundred MiB. A bigger one is refused while it is read, not after.
+export const MAX_BODY_BYTES = 8 * 1024 * 1024;
 // The server's project key rule. Doc links and `.sprintree.json` are both checked against it.
 const KEY_CHARS = "[A-Za-z][A-Za-z0-9]{0,9}";
 const KEY_RE = new RegExp(`sprintree\\.com/p/(${KEY_CHARS})\\b`, "g");
@@ -140,12 +145,28 @@ export function* ancestors(dir, root, p = path) {
 }
 
 const SECRET_KEY_RE = /token|secret|password|(^|[^a-z])pat($|[^a-z])/i;
-// Sprintree tokens: personal access tokens (itn_) and OAuth access/refresh tokens (itna_, itnr_). A token never
-// continues a word (keyitn_ is not one). Same rule as .gitleaks.toml.
-const TOKEN_SRC = String.raw`(?<![A-Za-z0-9])itn[ar]?_[A-Za-z0-9_-]{20,}`;
-const TOKEN_RE = new RegExp(TOKEN_SRC);
-const TOKEN_RE_ALL = new RegExp(TOKEN_SRC, "g");
-const TOKEN_PREFIX_RE = /^(Bearer\s+)?itn[ar]?_/i;
+// Sprintree tokens: personal access tokens (itn_) and OAuth access/refresh tokens (itna_, itnr_), followed by at least 20 body
+// characters. They are hidden wherever they stand, whatever comes before the head (a word, a digit, a removed character): no exception,
+// so st.mjs hides a superset of what the gitleaks rule in .gitleaks.toml reports (that rule skips a token that continues a word).
+const TOKEN_BODY = "[A-Za-z0-9_-]";
+const TOKEN_HEAD = "itn[ar]?_";
+const MASK = "[token]";
+// What the first pass of `scrub` writes in front of every mask: U+FDD0, a noncharacter (not meant for interchange, rare in real text, unlike a private-use character
+// such as U+E000, which Nerd Fonts and EUDC text use), which cleaning does not remove (a NUL is gone after it). The second pass merges a
+// mask WITH this sentinel and the token characters behind it, so a literal `[token]` in server text (`[token]s`, `[token]-based`, a chunk name
+// `[token]_page_actions_0kpicgu`) is left as it is. `scrub` turns any U+FDD0 of the input into U+FFFD before the first pass, so input
+// cannot fake the sentinel, and removes what is left of it at the end. Not in HIDDEN, not a control, and outside every byte class an escape
+// sequence is made of (`[ -/]`, `[0-?]`, `[@-~]`).
+const MASK_TAG = "\ufdd0";
+const MASK_TAG_UNIT = MASK_TAG.charCodeAt(0);
+const MASK_TAG_RE = /\ufdd0/g;
+// The head with 20 body characters ahead; `maskRuns` reads the body on by hand. Not `${TOKEN_HEAD}${TOKEN_BODY}{20,}`: on a body of 8 MiB that
+// regex overflows the regex stack (RangeError).
+const TOKEN_HEAD_SRC = String.raw`${TOKEN_HEAD}(?=${TOKEN_BODY}{20})`;
+const TOKEN_RE = new RegExp(TOKEN_HEAD_SRC);
+const isTokenBody = (c) => (c >= 0x30 && c <= 0x39) || (c >= 0x41 && c <= 0x5a) || (c >= 0x61 && c <= 0x7a) || c === 0x5f || c === 0x2d;
+const TOKEN_CHARS_RE = new RegExp(`^${TOKEN_BODY}+$`);
+const TOKEN_PREFIX_RE = new RegExp(String.raw`^(Bearer\s+)?${TOKEN_HEAD}`, "i");
 
 /** Dotted paths of keys/values in a parsed config that look like a credential. Values are never returned. */
 function suspiciousPaths(obj, prefix = "") {
@@ -173,7 +194,7 @@ function checkProjectKey(key, where) {
  * by that real path (O_NOFOLLOW and O_NONBLOCK where the OS has them, so a swapped-in symlink or FIFO is not followed or
  * waited on). Then the place of the opened file is checked again (on Linux from the descriptor itself, elsewhere by
  * resolving the path again) and must be the same file (dev and ino), so a parent directory swapped for a link between
- * the check and the open is caught (best effort where the OS cannot name an open file's path). At most 1 MB is read:
+ * the check and the open is caught (best effort where the OS cannot name an open file's path). At most 1 MiB is read:
  * a longer file is refused, whatever size it reports (a procfs file reports 0).
  * With `contain` (a real path, as the repo walk yields it: config and doc files) both places must lie inside it and, on
  * POSIX, the file must belong to the current user; `noHardLink` refuses a file with several hard links. Without `contain`
@@ -214,7 +235,7 @@ function readTextFile(f, fs, { contain = null, noHardLink = false, path: p = pat
     let n = 0;
     let got;
     while (n < buf.length && (got = fs.readSync(fd, buf, n, buf.length - n, null)) > 0) n += got;
-    if (n > MAX_TEXT_BYTES) throw new Error(`${f}: larger than 1 MB`);
+    if (n > MAX_TEXT_BYTES) throw new Error(`${f}: larger than 1 MiB`);
     return decodeText(buf.subarray(0, n), f);
   } finally {
     fs.closeSync(fd);
@@ -239,14 +260,16 @@ function readConfigFile(f, root, dir, fs, p) {
  * The project key from a `sprintree.com/p/<KEY>` link in a doc file, nearest directory first: every link of a file is
  * looked at, the template placeholder (`.../p/KEY`) is skipped. Returns { key (upper-case), file } or null. A doc file
  * that is refused (outside the repo, not a regular file, too large, UTF-16BE) is skipped with a warning, never read.
- * Throws only when the placeholder is the sole link found. opts: { path, fs, home, root (what `repoRoot` returned for `dir`, a real path: then `dir` is a real path too), warn(line) }.
+ * Throws only when the placeholder is the sole link found. opts: { path, fs, home, warn(line) }.
  */
 export function findDocKey(dir, opts = {}) {
   const p = opts.path ?? path;
-  const fs = opts.fs ?? REAL_FS;
-  // with `opts.root` given, `dir` must be its real path as well (resolveConfig passes both)
-  const start = "root" in opts ? dir : realOr(fs, p.resolve(dir), p);
-  const root = "root" in opts ? opts.root : climb(start, opts);
+  const start = realOr(opts.fs ?? REAL_FS, p.resolve(dir), p);
+  return docKey(start, climb(start, opts), opts);
+}
+
+/** `findDocKey` for a start that already is a real path and its repo root (what `climb` returned, or null): `resolveConfig` has both. */
+function docKey(start, root, { path: p = path, fs = REAL_FS, warn } = {}) {
   let placeholderIn = null;
   for (const d of ancestors(start, root, p)) {
     for (const name of DOC_FILES) {
@@ -255,7 +278,7 @@ export function findDocKey(dir, opts = {}) {
       try {
         text = readTextFile(f, fs, { contain: root ?? d, path: p });
       } catch (e) {
-        opts.warn?.(`Warning: skipped ${e.message}`);
+        warn?.(`Warning: skipped ${e.message}`);
         continue;
       }
       if (text === null) continue;
@@ -309,7 +332,7 @@ export function resolveConfig(dir, opts = {}) {
     break;
   }
   if (!config.project) {
-    const found = findDocKey(start, { path: p, fs, root, warn });
+    const found = docKey(start, root, { path: p, fs, warn });
     if (found) {
       config.project = found.key;
       source = source ?? found.file;
@@ -377,15 +400,27 @@ function pickMessage(text, id) {
   return candidates.find((m) => m && m.id === id);
 }
 
+/** SPRINTREE_TOKEN as `redact` reads it: trimmed, without a leading "Bearer ". */
+const tokenOf = (env) => (env.SPRINTREE_TOKEN || "").trim().replace(/^Bearer\s+/i, "");
+
+/** The configured token ("" when unset). A real token is letters, digits, _ and - only: anything else is refused (and never echoed). */
+function ownToken(env) {
+  const t = tokenOf(env);
+  if (t !== "" && !TOKEN_CHARS_RE.test(t)) {
+    throw new Error("SPRINTREE_TOKEN must be letters, digits, _ and - only, like a Sprintree token (the value is not echoed); look for a stray quote, space, newline or other character");
+  }
+  return t;
+}
+
 function authHeader(env) {
-  const t = (env.SPRINTREE_TOKEN || "").trim();
+  const t = ownToken(env);
   if (!t) {
     throw new Error(
       `No token. Set SPRINTREE_TOKEN to a Sprintree personal access token (${PAT_HINT}), ` +
         "or connect the Sprintree MCP server in your agent (OAuth) and use its tools directly."
     );
   }
-  return /^Bearer\s/i.test(t) ? t : `Bearer ${t}`;
+  return `Bearer ${t}`;
 }
 
 // Terminal control sequences a hostile server (or a hostile config file name) could send. Every ESC sequence loses
@@ -396,13 +431,15 @@ function authHeader(env) {
 // soft hyphen), every Default_Ignorable_Code_Point (also the unassigned ones in that set, tag characters and variation
 // selectors among them) and the Mongolian selectors, and the fillers that print as nothing. U+2028, U+2029 and U+2800
 // become a space, and a lone surrogate becomes U+FFFD first (stripping a format character between a high and a low
-// surrogate would join them into a tag character). Default_Ignorable_Code_Point covers U+180B-180F; the hieroglyph
-// format controls U+13430-1343F are Cf only from Unicode 15 (Node 18.7.0 has 14), so U+13439-1343F are listed. What real
-// text needs stays:
+// surrogate would join them into a tag character). Default_Ignorable_Code_Point covers U+180B-180F; of the hieroglyph
+// format controls U+13430-13438 are Cf since Unicode 12 and U+13439-1343F only since Unicode 15 (Node 18.7.0 has 14), so
+// those seven are listed. What real text needs stays:
 //   - ZWJ U+200D (emoji sequences), ZWNJ U+200C (Persian), LRM U+200E, RLM U+200F: ONE of them between two visible
-//     characters, the first of a run (a run would carry two bits per character). At the start or end of the text or of a
-//     line, next to a space or a mark, or with no visible character on one side it goes. Hidden characters between do not
-//     count: they are removed first, then runs are looked at;
+//     characters, the first of a run (a run would carry two bits per character). A combining mark (Mn, Mc) belongs to the
+//     visible character before it, so a joiner after a virama or an accent is after a visible character (Indic scripts:
+//     U+0915 U+094D ZWJ U+0937). At the start or end of the text or of a line, next to a space, before a mark, after a mark
+//     that has no visible character before it, or with no visible character on one side it goes. Hidden characters between
+//     do not count: they are removed first, then runs are looked at;
 //   - ONE variation selector VS1-16 (U+FE00-FE0F) directly after a visible base character (an emoji presentation
 //     selector), and one VS17-256 (U+E0100-E01EF) directly after a CJK ideograph; a run, a leading one or one after
 //     another format character is removed;
@@ -422,10 +459,12 @@ const LONE_SURROGATE_RE = /[\ud800-\udfff]/gu; // in `u` mode only a half that h
 const INVISIBLE_RE = new RegExp(`(${FLAG}|(?<=${BASE})[\\ufe00-\\ufe0f](?![${VS}])|(?<=[${CJK}])[\\u{e0100}-\\u{e01ef}](?![${VS}]))|[${HIDDEN}]`, "gu");
 const HIDDEN_RE = new RegExp(`[${HIDDEN}]`, "gu");
 const BASE_RE = new RegExp(BASE, "u");
-const VS_RE = new RegExp(`[${VS}]`, "u");
+const MARK_RE = /^[\p{Mn}\p{Mc}]$/u;
 
-/** A visible character, `cp` a code point (-1: none, which is not). */
-const isBase = (cp) => (cp < 0x80 ? cp > 0x20 && cp < 0x7f : BASE_RE.test(String.fromCodePoint(cp)));
+/** A visible character, `cp` a code point (-1: none, which is not). The sentinel in front of a mask (MASK_TAG) counts as one: the mask behind it is visible. */
+const isBase = (cp) => (cp < 0x80 ? cp > 0x20 && cp < 0x7f : cp === MASK_TAG_UNIT || BASE_RE.test(String.fromCodePoint(cp)));
+/** A combining mark that belongs to the character before it (Mn, Mc: a virama, an accent, a vowel sign). */
+const isMark = (cp) => cp >= 0x300 && MARK_RE.test(String.fromCodePoint(cp));
 /** The code point that ends `s` before index `i`. */
 const codePointBefore = (s, i) => {
   const low = s.charCodeAt(i - 1);
@@ -434,8 +473,23 @@ const codePointBefore = (s, i) => {
 };
 
 /**
+ * Whether a visible character ends `s[from, to)`: a visible character, possibly followed by combining marks (a mark is part of
+ * the character before it). A chunk of nothing but marks has no character of its own: `before` (the same question for the
+ * text before the chunk) decides.
+ */
+function endsVisible(s, from, to, before) {
+  for (let i = to; i > from; ) {
+    const cp = codePointBefore(s, i);
+    if (isBase(cp)) return true;
+    if (!isMark(cp)) return false;
+    i -= cp > 0xffff ? 2 : 1;
+  }
+  return before;
+}
+
+/**
  * A growing string made of UTF-16 code units. `replace` with a callback (or `$1`) on a global regex first collects every
- * match: 64 MB of nothing but matches ran the process out of memory. The passes below read the matches one at a time
+ * match: 64 MiB of nothing but matches ran the process out of memory. The passes below read the matches one at a time
  * (`exec`) and write here instead; a match costs two array slots, not an object.
  */
 class Units {
@@ -493,7 +547,7 @@ function dropInvisible(text) {
   if (m === null) return text;
   const out = new Units(text.length);
   let at = 0;
-  let last = -1; // the last code point written
+  let visible = false; // a visible character (with its marks) ends what has been written
   let joiner = -1; // the first joiner of the run being read, not written yet
   let leftSeen = false; // a visible character stood before that run
   // the run is over: `next` is the code point that follows it
@@ -507,15 +561,15 @@ function dropInvisible(text) {
     if (m.index > at) {
       settle(text.codePointAt(at));
       out.add(text, at, m.index);
-      last = codePointBefore(text, m.index);
+      visible = endsVisible(text, at, m.index, visible);
     }
     if (m[1] !== undefined) {
       settle(m[1].codePointAt(0));
       out.add(m[1], 0, m[1].length);
-      last = codePointBefore(m[1], m[1].length);
+      visible = endsVisible(m[1], 0, m[1].length, visible);
     } else if (joiner < 0 && m[0] >= "\u200c" && m[0] <= "\u200f") {
       joiner = m[0].charCodeAt(0);
-      leftSeen = isBase(last) || (last >= 0 && VS_RE.test(String.fromCodePoint(last)));
+      leftSeen = visible;
     }
     at = m.index + m[0].length;
   } while ((m = INVISIBLE_RE.exec(text)) !== null);
@@ -536,7 +590,7 @@ export function stripControls(text) {
   return dropInvisible(s);
 }
 
-/** True when `text` reads as a refusal ("Error:" first, whitespace and every HIDDEN character, the kept ones too, left out). Reads only as far as it needs: a 64 MB answer is not copied for this. */
+/** True when `text` reads as a refusal ("Error:" first, whitespace and every HIDDEN character, the kept ones too, left out). Reads only as far as it needs: a 64 MiB answer is not copied for this. */
 function isRefusal(text) {
   let head = "";
   let at = 0;
@@ -551,7 +605,7 @@ function isRefusal(text) {
 }
 
 // A token can be hidden in text by characters that print as nothing (the kept joiners, a variation selector, flag
-// tags), percent-encoded (`Bearer%20itn%5F...`) or written as a `_` escape. gitleaks decodes the last two, so
+// tags), percent-encoded (`Bearer%20itn%5F...`) or written with a `_` escape for the underscore. gitleaks decodes the last two, so
 // redaction looks at a view of the text: HIDDEN characters left out, escapes decoded (recursively, up to 5 levels, as
 // gitleaks does). Every match is mapped back to the text it came from and replaced there. What gitleaks decodes, and so
 // does this: `%XX` for the ASCII characters from tab to `~` (not the controls U+0000-0008 and DEL, not a byte of a
@@ -559,41 +613,56 @@ function isRefusal(text) {
 // segments, this does not.
 const ESCAPE_RE = /%(0[9a-fA-F]|[1-6][0-9a-fA-F]|7[0-9a-eA-E])|\\{1,2}[uU]([0-9a-fA-F]{4})/g;
 const MAX_DECODE_DEPTH = 5;
-// Fast path: the text goes straight to the token regex when no HIDDEN character and no escape is in it
+// Only text with a HIDDEN character or an escape in it needs the view; any other text is read as it is
 const NEEDS_VIEW_RE = new RegExp(`[${HIDDEN}]|${ESCAPE_RE.source}`, "u");
-const MASK = "[token]";
-const decodeEscape = (m, a, b) => String.fromCharCode(parseInt(a ?? b, 16));
-
-/** `s` with its escapes decoded once, again and again up to the decoding depth: every form it can take, `s` itself first. */
-function decodedForms(s) {
-  const forms = [s];
-  for (let depth = 0; depth < MAX_DECODE_DEPTH; depth++) {
-    const next = s.replace(ESCAPE_RE, decodeEscape);
-    if (next === s) break;
-    forms.push((s = next));
-  }
-  return forms;
-}
-
 const regexEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
- * The configured token and anything shaped like a Sprintree token (itn_, itna_, itnr_) replaced by [token].
- * The configured token (at least 6 characters; a shorter one is no secret) goes wherever one of its forms (as given, or with its
- * own escapes decoded) stands in the text as it is, or in the view of it described above. Nothing else is looked at.
+ * `text` with every run that `re` finds in `view` replaced by `masked`. A run is what `re` matches (the configured token, a mask, a token
+ * head) and then every token character behind it, read by hand: the regex only says where a run starts, so the cost is linear. `view` is
+ * `text` itself, or a view of it (hidden characters left out, escapes decoded); `spans[2i]`, `spans[2i+1]`: the part of `text` that unit i
+ * of the view stands for. A run is at least 6 characters and becomes at most 8 (MASK_TAG and the mask): the result is longer by at most two characters per run.
  */
-function redact(text, env) {
+function maskRuns(text, view, re, spans, masked) {
+  re.lastIndex = 0;
+  let m = re.exec(view);
+  if (m === null) return text;
+  const out = new Units(text.length + 2 * Math.floor(text.length / 6) + 8);
+  let at = 0;
+  do {
+    let end = m.index + m[0].length;
+    while (end < view.length && isTokenBody(view.charCodeAt(end))) end++;
+    out.add(text, at, spans ? spans[2 * m.index] : m.index);
+    out.add(masked, 0, masked.length);
+    at = spans ? spans[2 * (end - 1) + 1] : end;
+    re.lastIndex = end;
+  } while ((m = re.exec(view)) !== null);
+  out.add(text, at, text.length);
+  return out.toString();
+}
+
+/**
+ * The configured token (at least 6 characters; a shorter one is no secret; `ownToken` has refused anything but token characters) and
+ * anything shaped like a Sprintree token (itn_, itna_, itnr_ and 20 body characters), whatever stands before it, replaced by [token],
+ * each together with the token characters behind it. They are looked for in the text as it is and, when it holds a hidden character or an
+ * escape, in the view described above (the configured token also as it was written: an escape that starts before it can take its first
+ * characters, `%41abcdef` reads as `Aabcdef`).
+ * `before`: the text is read before its control sequences and invisible characters go (see `scrub`), so a mask is written as MASK_TAG and
+ * the mask (an unfinished sequence right before a mask would take its `[`; see MASK_TAG for why the sentinel stops it). Otherwise
+ * (the second pass) MASK_TAG, the mask and the token characters behind them are one mask, written as the plain mask (the rest of a token
+ * that an earlier pass cut short); a `[token]` without a MASK_TAG in front of it is text like any other.
+ */
+function redact(text, env, before = false) {
   text = String(text);
-  const mine = (env.SPRINTREE_TOKEN || "").trim().replace(/^Bearer\s+/i, "");
-  const own = mine.length >= 6;
-  const forms = own ? [...new Set(decodedForms(mine))].filter((f) => f.length >= 6) : [];
-  const re = forms.length ? new RegExp(`${forms.map(regexEscape).join("|")}|${TOKEN_SRC}`, "g") : TOKEN_RE_ALL;
-  // a match is at least 6 characters (a token 24) and becomes 7: the result is longer by at most one character per match
-  const room = (n) => n + Math.floor(n / (forms.length ? 6 : 24)) + 7;
-  const mask = (out) => out.add(MASK, 0, MASK.length);
-  // the configured token as it stands in the text, even when it holds a `%XX` or `\u00XX` of its own (the decoded view would turn it into something else)
-  if (own) text = rewrite(text, new RegExp(regexEscape(mine), "g"), mask, room(text.length));
-  if (!NEEDS_VIEW_RE.test(text)) return rewrite(text, re, mask, room(text.length));
+  const mine = tokenOf(env);
+  const own = mine.length >= 6 ? regexEscape(mine) : null;
+  const masked = before ? MASK_TAG + MASK : MASK;
+  const re = new RegExp([own, before ? null : regexEscape(MASK_TAG + MASK), TOKEN_HEAD_SRC].filter(Boolean).join("|"), "g");
+  if (!NEEDS_VIEW_RE.test(text)) return maskRuns(text, text, re, null, masked);
+  // The configured token as it was written, before the view: an escape that STARTS before the token can take its first characters
+  // (`%41abcdef` reads as `Aabcdef`), so the view alone would not find `abcdef`. It writes MASK_TAG too, also in the second pass: the view
+  // below then merges this mask with the token characters behind it that the raw run could not reach (a kept character stood between).
+  if (own) text = maskRuns(text, text, new RegExp(own, "g"), null, MASK_TAG + MASK);
   // The view is a code unit array `cur`; spans[2i], spans[2i+1]: the part of `text` that unit i stands for. Removing and
   // decoding shrink both in place (`move` keeps what lies between two edits).
   const n = text.length;
@@ -616,54 +685,67 @@ function redact(text, env) {
     from = end;
   };
   let view = text;
-  HIDDEN_RE.lastIndex = 0;
-  let m = HIDDEN_RE.exec(text);
-  if (m !== null) {
-    do {
-      move(m.index);
-      from = m.index + m[0].length;
-    } while ((m = HIDDEN_RE.exec(text)) !== null);
-    move(n);
-    len = to;
-    view = unitsToString(cur, len);
-  }
-  for (let depth = 0; depth < MAX_DECODE_DEPTH; depth++) {
-    ESCAPE_RE.lastIndex = 0;
-    m = ESCAPE_RE.exec(view);
-    if (m === null) break;
+  // Every match of `rx` in the view goes: `unit(m)` is the code unit it becomes (none: it is removed). Returns whether there was a match.
+  const compact = (rx, unit) => {
+    rx.lastIndex = 0;
+    let m = rx.exec(view);
+    if (m === null) return false;
     from = 0;
     to = 0;
     do {
       move(m.index);
-      const first = spans[2 * m.index];
-      const end = spans[2 * (m.index + m[0].length - 1) + 1];
-      cur[to] = parseInt(m[1] ?? m[2], 16);
-      spans[2 * to] = first;
-      spans[2 * to + 1] = end;
-      to++;
+      if (unit) {
+        const first = spans[2 * m.index];
+        const end = spans[2 * (m.index + m[0].length - 1) + 1];
+        cur[to] = unit(m);
+        spans[2 * to] = first;
+        spans[2 * to + 1] = end;
+        to++;
+      }
       from = m.index + m[0].length;
-    } while ((m = ESCAPE_RE.exec(view)) !== null);
+    } while ((m = rx.exec(view)) !== null);
     move(len);
     len = to;
     view = unitsToString(cur, len);
-  }
-  re.lastIndex = 0;
-  m = re.exec(view);
-  if (m === null) return text;
-  const out = new Units(room(n));
-  let at = 0;
-  do {
-    out.add(text, at, spans[2 * m.index]);
-    mask(out);
-    at = spans[2 * (m.index + m[0].length - 1) + 1];
-  } while ((m = re.exec(view)) !== null);
-  out.add(text, at, n);
-  return out.toString();
+    return true;
+  };
+  compact(HIDDEN_RE, null);
+  // an escape never decodes to the sentinel (`\ufdd0`): the view must not hold a sentinel that the text does not
+  const decode = (m) => {
+    const c = parseInt(m[1] ?? m[2], 16);
+    return c === MASK_TAG_UNIT ? 0xfffd : c;
+  };
+  for (let depth = 0; depth < MAX_DECODE_DEPTH && compact(ESCAPE_RE, decode); depth++);
+  return maskRuns(text, view, re, spans, masked);
 }
 
-/** Everything that is printed goes through this: control sequences first (so they cannot split the token), then the token. */
+// An escape prefix (`ESC`, `ESC [ 1`, `ESC (`) right before a token head: cleaning would take the head's `i` as the sequence's final byte.
+// ESC_SEQ_RE without its final byte - change together.
+const HEAD_AFTER_ESC_RE = new RegExp(String.raw`(\u001b(?:\[[0-?]*[ -/]*|[ -/]*))(?=${TOKEN_HEAD})`, "g");
+
+/**
+ * Everything that is printed goes through this: redacted as it came, cleaned, redacted again. Each pass has a reason:
+ * - as it came: an unfinished ESC sequence ("ESC" + one character, `ESC [ 1` + a letter) takes the first characters of a token behind it when it is cleaned,
+ *   so the token is masked while it is still whole. A NUL is put between an escape prefix and a head that stands right behind it (the
+ *   cleaning removes the NUL, but the sequence ends before the head), a mask is written with MASK_TAG in front;
+ * - cleaned: control sequences, controls and invisible characters must not stay in the text, and what cleaning removes can join the pieces of a token
+ *   (`itn_` + 10 characters, ESC [ 0 m, 20 more);
+ * - again: so what cleaning joined is read as the token it is, and a mask with MASK_TAG in front followed by token characters is one mask (the rest of a
+ *   token the first pass cut short).
+ * A token is hidden wherever it stands: nothing before its head (a word, a digit, a sequence) makes it safe. Not covered: a deliberately
+ * malformed escape sequence that takes a character from inside the head (`itn ESC _...`), like base64 and hex it takes someone who has the token.
+ * A U+FDD0 in the input is U+FFFD in the output (it is MASK_TAG), and none is ever printed.
+ */
 function scrub(text, env) {
-  return redact(stripControls(text), env);
+  let s = String(text);
+  s = rewrite(s, MASK_TAG_RE, (o) => o.unit(0xfffd));
+  s = rewrite(s, HEAD_AFTER_ESC_RE, (o, m) => {
+    o.add(m[1], 0, m[1].length);
+    o.unit(0);
+  }, 2 * s.length);
+  s = redact(stripControls(redact(s, env, true)), env);
+  // A safety net that should never fire: every sentinel a pass writes is merged into a mask by the view of the second pass.
+  return rewrite(s, MASK_TAG_RE);
 }
 
 /** `v` ("20.1.0") >= `min` ("18.7.0"), compared part by part. */
@@ -695,6 +777,49 @@ function networkMessage(e, url, host, env) {
   return `fetch failed: ${code || text || "unknown error"} ${host}`;
 }
 
+/** The refusal of a body over the limit (not a network error: its message is shown as it is). */
+class BodyTooLarge extends Error {
+  constructor(max) {
+    super(`response is larger than ${max % (1024 * 1024) === 0 ? `${max / (1024 * 1024)} MiB` : `${max} bytes`}; refusing to read it`);
+  }
+}
+
+/**
+ * The text of a response, at most `max` bytes of it. The body is read chunk by chunk and the stream is cancelled at the limit, so
+ * a server that never stops sending costs `max` bytes, not all of memory; a declared Content-Length over the limit is refused
+ * before a byte is read. A client without a body stream (a mock) gives only `text()`: that is measured in bytes too.
+ */
+async function readBody(res, max) {
+  if (Number(res.headers?.get?.("content-length")) > max) {
+    await res.body?.cancel?.().catch(() => {});
+    throw new BodyTooLarge(max);
+  }
+  if (typeof res.body?.getReader !== "function") {
+    const text = await res.text();
+    if (Buffer.byteLength(text) > max) throw new BodyTooLarge(max);
+    return text;
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  const parts = [];
+  let got = 0;
+  let done = false;
+  try {
+    while (!done) {
+      const chunk = await reader.read();
+      done = chunk.done;
+      if (done) break;
+      got += chunk.value.byteLength;
+      if (got > max) throw new BodyTooLarge(max);
+      parts.push(decoder.decode(chunk.value, { stream: true }));
+    }
+    parts.push(decoder.decode());
+    return parts.join("");
+  } finally {
+    if (!done) await reader.cancel().catch(() => {});
+  }
+}
+
 /** The `tools/list` answer of a connected client: the array of tools (shared by `tools`, `schema` and the snapshot refresh). */
 export async function listTools(client) {
   const answer = await client.rpc("tools/list", {});
@@ -703,7 +828,7 @@ export async function listTools(client) {
 }
 
 /** JSON-RPC client over Streamable HTTP. `connect()` runs the initialize handshake; `rpc(method, params)` returns the result. */
-export function makeClient({ fetchImpl, env, warn }) {
+export function makeClient({ fetchImpl, env, warn, maxBody = MAX_BODY_BYTES }) {
   const url = checkMcpUrl(env.SPRINTREE_MCP_URL || DEFAULT_URL);
   const { host, hostname } = new URL(url);
   const auth = authHeader(env);
@@ -735,8 +860,9 @@ export function makeClient({ fetchImpl, env, warn }) {
         signal: AbortSignal.timeout(ms),
       });
       sid = res.headers.get("mcp-session-id") ?? sid;
-      text = await res.text();
+      text = await readBody(res, maxBody);
     } catch (e) {
+      if (e instanceof BodyTooLarge) throw e;
       if (e?.name === "TimeoutError" || e?.name === "AbortError") {
         throw new Error(`request to ${host} timed out after ${ms} ms (set SPRINTREE_TIMEOUT_MS to change)`);
       }
@@ -777,7 +903,7 @@ export function makeClient({ fetchImpl, env, warn }) {
 
 /**
  * Run one CLI invocation. Returns the exit code; all I/O goes through `deps` so tests can mock it.
- * deps: { fetch, env, cwd, out(line), err(line), nodeVersion }
+ * deps: { fetch, env, cwd, out(line), err(line), nodeVersion, maxBody (bytes; a test lowers or lifts it) }
  */
 export async function run(argv, deps = {}) {
   const env = deps.env ?? process.env;
@@ -792,6 +918,7 @@ export async function run(argv, deps = {}) {
       out(VERSION);
       return 0;
     }
+    ownToken(env);
     const warn = (line) => err(scrub(line, env));
     if (cmd === "key" || cmd === "config") {
       const { _source, ...cfg } = resolveConfig(path.resolve(cwd, a1 || "."), { warn });
@@ -836,7 +963,7 @@ export async function run(argv, deps = {}) {
         throw new Error(`arguments are not valid JSON${at ? ` (at position ${at[1]})` : ""}`);
       }
     }
-    const client = makeClient({ fetchImpl, env, warn });
+    const client = makeClient({ fetchImpl, env, warn, maxBody: deps.maxBody });
     await client.connect();
     if (cmd === "tools" || cmd === "schema") {
       const tools = await listTools(client);
