@@ -21,8 +21,8 @@ Nothing is pushed to the main branch before it is green, not a one-line fix and 
 
 Versioning rules are in [CHANGELOG.md](CHANGELOG.md). Claude Code only updates an installed plugin when `version` changes, so a release without a bump reaches nobody.
 The version lives in `package.json`, `.claude-plugin/plugin.json`,
-`gemini-extension.json`, `VERSION` in `skills/sprintree/scripts/st.mjs` and the newest released heading of `CHANGELOG.md`;
-`npm test` fails if they differ.
+`gemini-extension.json`, `VERSION` in `skills/sprintree/scripts/st.mjs` and the newest released heading of `CHANGELOG.md`, plus the marker
+`<!-- sprintree-agent:begin x.y.z -->` in `templates/AGENTS.md`; `npm test` fails if they differ.
 
 1. Bump all of those, and move the `[Unreleased]` notes under `## [x.y.z] - YYYY-MM-DD` in `CHANGELOG.md`.
 2. `npm test` and the rest of the PCC gate green, push, CI green.

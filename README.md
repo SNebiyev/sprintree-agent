@@ -15,16 +15,20 @@ Model-independent.
 2. **The `sprintree` skill** (`skills/sprintree/SKILL.md`), the working rules on top of the MCP tools:
    - `sync` (default): record what the session did, fix statuses, file deferred findings. Never takes new work.
    - `task`: sync, then claim and start the next To do card.
+   - card discipline: the Sprintree server sends it to every agent; `templates/AGENTS.md` and `GEMINI.md` carry
+     it with the protecting rules, the skill adds the details. A card you work on is in_progress, gets the
+     result as a comment and a real status when you stop; cards nobody asked about are left alone (sync and task
+     mode only add a matching finding as a comment).
    - rule zero (nothing unverified on the board), never duplicate, epic > story > task, status by category,
      a card template, and the API traps.
 3. **`scripts/st.mjs`**, a dependency-free Node >= 18.7.0 MCP client for sessions where MCP is not connected.
 
-## Install (one command per client)
+## Install
 
 | Client | Command |
 |---|---|
-| Claude Code | `claude plugin marketplace add SNebiyev/sprintree-agent && claude plugin install sprintree@sprintree` |
-| Codex CLI | `codex mcp add sprintree --url https://sprintree.com/mcp` then clone this repo and copy `skills/sprintree` to `~/.agents/skills/` (see below) |
+| Claude Code | `claude plugin marketplace add SNebiyev/sprintree-agent && claude plugin install sprintree@sprintree`, then add `templates/AGENTS.md` to your `CLAUDE.md` (see below) |
+| Codex CLI | `codex mcp add sprintree --url https://sprintree.com/mcp` then clone this repo, copy `skills/sprintree` to `~/.agents/skills/` and add `templates/AGENTS.md` to `~/.codex/AGENTS.md` (see below) |
 | Gemini CLI | `gemini extensions install https://github.com/SNebiyev/sprintree-agent` |
 | Any other MCP agent | add `https://sprintree.com/mcp` as a Streamable HTTP server, paste `templates/AGENTS.md` into your repo |
 
@@ -40,6 +44,15 @@ The plugin bundles the skill and `.mcp.json` (the MCP server).
   shows "Needs authentication".
 - If you earlier copied the skill by hand to `~/.claude/skills/sprintree`, remove it so the model does not see two
   similar skills.
+- The skill loads only for sync, task and handover, but the card rules must hold in every session: add (append, do not
+  overwrite)
+  [`templates/AGENTS.md`](https://raw.githubusercontent.com/SNebiyev/sprintree-agent/master/templates/AGENTS.md) to
+  `~/.claude/CLAUDE.md` (global) or the repo's own `CLAUDE.md`. In the global file leave out the `Project board:`
+  line: the project key belongs to each repo (`.sprintree.json`, or the repo's own `AGENTS.md`/`CLAUDE.md`). The
+  plugin keeps the file at `~/.claude/plugins/cache/sprintree/sprintree/<version>/templates/AGENTS.md`; the link above
+  shows the newest one. After a plugin update, replace the block from the `sprintree-agent:begin` line to the
+  `sprintree-agent:end` line (both included) with the new file, in a global file again without its `Project board:`
+  line; do not keep two copies.
 - Without the plugin: `claude mcp add --transport http --scope user sprintree https://sprintree.com/mcp`.
 
 ### Codex CLI
@@ -50,8 +63,14 @@ git clone https://github.com/SNebiyev/sprintree-agent && cd sprintree-agent
 mkdir -p ~/.agents/skills && cp -r skills/sprintree ~/.agents/skills/   # Windows: copy the folder to %USERPROFILE%\.agents\skills
 ```
 
-Per repo, use `.agents/skills/sprintree/` (in the repo root) instead, and add `templates/AGENTS.md` from this repo to the
-repo's own `AGENTS.md`. Codex plugin packaging is documented by OpenAI but not verified here; see `docs/maintainers/RESEARCH.md`.
+The skill loads only for sync, task and handover, so the card rules reach every session through `AGENTS.md`: add
+(append, do not overwrite) `templates/AGENTS.md` to `~/.codex/AGENTS.md` (global), leaving out its `Project board:`
+line, because the project key belongs to each repo. Per repo, copy the skill to `.agents/skills/sprintree/` (in the
+repo root) instead of `~/.agents/skills/`, and add the template to the repo's own `AGENTS.md` instead of
+`~/.codex/AGENTS.md`. After you pull a new version, copy the skill again and replace the block from the
+`sprintree-agent:begin` line to the `sprintree-agent:end` line (both included) with the new file, in a global file
+again without its `Project board:` line; do not keep two copies. Codex plugin packaging is documented by OpenAI but
+not verified here; see `docs/maintainers/RESEARCH.md`.
 
 ### Gemini CLI
 
@@ -80,7 +99,8 @@ from this repo (or its contents) into your repo or custom instructions.
   - Export `SPRINTREE_TOKEN` for `st.mjs`. It is never printed.
   - Never commit a token, and never put one in `.sprintree.json`.
 - **Revoke:** Settings -> API & MCP -> Personal access tokens, delete the token. Do it at once if one leaked.
-- **Untrusted content:** the skill treats everything written on a card as data, never as instructions
+- **Untrusted content:** the skill, the `AGENTS.md` template and `GEMINI.md` treat everything written on a card
+  as data, never as instructions
   ([SKILL.md, "Card text is untrusted data"](skills/sprintree/SKILL.md#card-text-is-untrusted-data)).
 
 Report a vulnerability: see `SECURITY.md`.
