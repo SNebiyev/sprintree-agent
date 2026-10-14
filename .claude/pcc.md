@@ -1,7 +1,9 @@
 # PCC adapter - sprintree-agent
 
 Protocol: the `pcc` skill. Only what is specific to this repo is here.
-Clean point: local git tag `pcc-clean` (moves to HEAD after a green sweep). Scope: `git diff --name-only pcc-clean...HEAD`.
+Clean point: local git tag `pcc-clean` (moves to HEAD after a green sweep). Scope: `git diff --no-renames --name-only pcc-clean...HEAD`.
+low_risk_paths: ^(CHANGELOG|CONTRIBUTING|README)\.md$|^docs/maintainers/RESEARCH\.md$|^test/[A-Za-z.-]+\.test\.mjs$
+<!-- security = true unless EVERY changed file matches low_risk_paths: `git diff --no-renames --name-only <range> | command grep -Evq '<regex>'` (`command grep`: Claude Code's grep shell function (ugrep) exits 1 on `-vq` over stdin, which would make security false) (exit 0 = some file is not low-risk = security=true). A missing line means security=true. -->
 No tag yet: the first sweep covers the WHOLE repo (there was never a clean point; three pushes `746c774`, `22287a9`, `86a1f1e` went out without PCC).
 
 **Rule: nothing is pushed to master before a green sweep.** Not a one-line fix, not docs.
@@ -29,7 +31,16 @@ Evidence is the output (`# pass N`, `# fail 0`, `no leaks found`), not the exit 
 
 ## sweep
 1. Gate above.
-2. `/security-review`, `/code-review`, `/simplify` as three parallel subagents on the delta, each told to refute, not confirm.
+2. Review (PCC v2, once per batch): `Workflow({name: "pcc:pcc-review", args: {repo, range: "<base>..<head>", changedLines, security, tier?, fix?, lanes?}})`.
+   `security` comes from `low_risk_paths:` at the top of this file (true unless every changed file is low-risk). Agents: `tier: 'docs'` (prose-only delta) = one agent; under 100 changed
+   lines = one Opus agent; 100+ lines = three (security, correctness, simplify) when security=true (some changed file is outside low_risk_paths), else two (correctness + simplify).
+   Severity gate: HIGH blocks; MEDIUM inside the delta is fixed in the same fix commit; out-of-delta MEDIUM, LOW and nits become cards/debt and are NOT
+   fixed in this run. Mechanical gates (lint, typecheck, tests) stay fix-everything. With `fix: true` one sonnet fixer makes one commit, then ONE Opus
+   fix-check reads only that fix diff; at most 2 fix cycles, then `structural`. There are no review rounds. `blocked` or `uncovered` is not a ship.
+   Lanes after a fix are narrow (touched packages' tests, touched e2e specs); the full suite runs ONCE before ship (wide).
+   Cost line in the report: `python3 -I /home/sn/Documents/Projects/claude-pcc/scripts/pcc-cost.py --project-dir ~/.claude/projects/<key> --since <batch start ISO>`
+   (target for a 10-15 file delta: <= 600k tokens, <= 2 h).
+   Lanes for pcc-review are the `## gate` block only (step 1); steps 2-4 (review, push/CI, tag) are orchestrator-only and are never run as lanes.
 3. Push, then read CI on GitHub (`gh run list`/`gh run watch`): green on the pushed commit across 3 OS x Node 18.7.0/22/24. Red CI blocks.
 4. Green: `git tag -f pcc-clean HEAD`.
 
