@@ -236,12 +236,13 @@ test("hooks.json: every hook first tests the token in the shell and can never fa
 test("SubagentStop hides common secret shapes and the user's own full token too", async () => {
   const s = server();
   const full = `itn_${BODY.split("").reverse().join("")}`;
-  const msg = ["key AKIAABCDEFGHIJKLMNOP", `gh ghp_${"a".repeat(36)}`, `DB_PASSWORD="hunter2hunter2"`, "url postgres://me:pw1234@db/x", `mine ${full}`].join("\n");
+  const aws = `AKIA${"IOSFODNN7EXAMPLE"}`; // built here: no secret-shaped literal in the source
+  const msg = [`key ${aws}`, `gh ghp_${"a".repeat(36)}`, `DB_PASSWORD="hunter2hunter2"`, "url postgres://me:pw1234@db/x", `mine ${full}`].join("\n");
   const dir = tmpDir("runs-");
   const env = { SPRINTREE_RUNS_TOKEN: TOKEN, SPRINTREE_TOKEN: full, CLAUDE_PROJECT_DIR: path.join(dir, "my-repo") };
   await main(["hook"], { env, home: dir, fetch: s.fetch, stdin: JSON.stringify({ hook_event_name: "SubagentStop", agent_id: "a1", last_assistant_message: msg }), out: () => {}, now: () => 0 });
   const { result } = s.asked.find((a) => a.name === "update_lane").args;
-  for (const bad of ["AKIAABCDEFGHIJKLMNOP", "ghp_aaaa", "hunter2", "pw1234", full]) assert.ok(!result.includes(bad), `${bad} in ${result}`);
+  for (const bad of [aws, "ghp_aaaa", "hunter2", "pw1234", full]) assert.ok(!result.includes(bad), `${bad} in ${result}`);
   assert.match(result, /DB_PASSWORD="\[redacted\]"/);
 });
 
