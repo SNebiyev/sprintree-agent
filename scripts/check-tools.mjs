@@ -162,13 +162,34 @@ export function checkAll(snap = JSON.parse(readFileSync(SNAPSHOT, "utf8"))) {
   return DOCS.flatMap((f) => checkText(readFileSync(path.join(ROOT, f), "utf8"), snap, f));
 }
 
-/** Rebuild the snapshot from the live server through the package's own client. Returns the number of tools. */
+/**
+ * Rebuild the snapshot from the live server through the package's own client. Returns the number of tools. The agent-run
+ * tools are listed only to an agent-runs token: with SPRINTREE_RUNS_TOKEN set they are read with it and added; without it
+ * the ones the snapshot already has are kept, so a refresh never drops them.
+ */
 export async function refresh({ fetchImpl = globalThis.fetch, env = process.env, file = SNAPSHOT } = {}) {
-  const client = makeClient({ fetchImpl, env });
-  await client.connect();
-  const tools = await listTools(client);
-  writeFileSync(file, JSON.stringify(buildSnapshot(tools), null, 1) + "\n");
-  return tools.length;
+  const list = async (e) => {
+    const client = makeClient({ fetchImpl, env: e });
+    await client.connect();
+    return listTools(client);
+  };
+  const snap = buildSnapshot(await list(env));
+  const runsToken = (env.SPRINTREE_RUNS_TOKEN || "").trim().replace(/^Bearer\s+/i, "");
+  const runs = runsToken ? buildSnapshot(await list({ ...env, SPRINTREE_TOKEN: runsToken })).tools : previousRunTools(file);
+  const tools = Object.fromEntries(Object.entries({ ...snap.tools, ...runs }).sort(([a], [b]) => a.localeCompare(b)));
+  writeFileSync(file, JSON.stringify({ tools }, null, 1) + "\n");
+  return Object.keys(tools).length;
+}
+
+export const RUN_TOOLS = ["start_run", "update_lane", "get_run", "close_run"];
+
+function previousRunTools(file) {
+  try {
+    const old = JSON.parse(readFileSync(file, "utf8")).tools;
+    return Object.fromEntries(RUN_TOOLS.filter((t) => old[t]).map((t) => [t, old[t]]));
+  } catch {
+    return {};
+  }
 }
 
 if (isMainModule(process.argv[1], import.meta.url)) {

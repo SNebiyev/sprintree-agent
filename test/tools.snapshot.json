@@ -142,6 +142,14 @@
     "key"
    ]
   },
+  "close_run": {
+   "properties": {
+    "run": {}
+   },
+   "required": [
+    "run"
+   ]
+  },
   "create_issue": {
    "properties": {
     "assignee": {},
@@ -597,6 +605,14 @@
    "required": [
     "project"
    ]
+  },
+  "get_run": {
+   "properties": {
+    "lane": {},
+    "run": {},
+    "since": {}
+   },
+   "required": []
   },
   "get_slack_notifications": {
    "properties": {
@@ -1485,6 +1501,15 @@
     "until"
    ]
   },
+  "start_run": {
+   "properties": {
+    "label": {},
+    "title": {}
+   },
+   "required": [
+    "label"
+   ]
+  },
   "submit_review": {
    "properties": {
     "key": {},
@@ -1582,6 +1607,28 @@
    "required": [
     "name",
     "project"
+   ]
+  },
+  "update_lane": {
+   "properties": {
+    "agent": {},
+    "checkpoint": {},
+    "phase": {},
+    "result": {},
+    "run": {},
+    "status": {
+     "enum": [
+      "running",
+      "done",
+      "failed",
+      "blocked"
+     ]
+    },
+    "type": {}
+   },
+   "required": [
+    "agent",
+    "run"
    ]
   },
   "update_page": {

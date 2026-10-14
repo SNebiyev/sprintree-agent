@@ -1,0 +1,61 @@
+{
+  "description": "Agent runs (opt-in: only with SPRINTREE_RUNS_TOKEN set): records where each subagent stands in Sprintree and tells the main agent after /clear or compaction. Without the token no command but a shell test runs and nothing is sent.",
+  "hooks": {
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -z \"$SPRINTREE_RUNS_TOKEN\" ] || node \"${CLAUDE_PLUGIN_ROOT}/skills/sprintree/scripts/runs.mjs\" hook 2>/dev/null || true",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -z \"$SPRINTREE_RUNS_TOKEN\" ] || node \"${CLAUDE_PLUGIN_ROOT}/skills/sprintree/scripts/runs.mjs\" hook 2>/dev/null || true",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -z \"$SPRINTREE_RUNS_TOKEN\" ] || node \"${CLAUDE_PLUGIN_ROOT}/skills/sprintree/scripts/runs.mjs\" hook 2>/dev/null || true",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "clear|compact|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -z \"$SPRINTREE_RUNS_TOKEN\" ] || node \"${CLAUDE_PLUGIN_ROOT}/skills/sprintree/scripts/runs.mjs\" hook 2>/dev/null || true",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -z \"$SPRINTREE_RUNS_TOKEN\" ] || node \"${CLAUDE_PLUGIN_ROOT}/skills/sprintree/scripts/runs.mjs\" hook 2>/dev/null || true",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

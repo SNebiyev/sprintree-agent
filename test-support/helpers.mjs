@@ -54,6 +54,7 @@ export const TOKEN_CASES = [
   ["PAT", `leak itn_${BODY} end`, `itn_${BODY}`, "leak [token] end"],
   ["OAuth access token", `leak itna_${BODY} end`, `itna_${BODY}`, "leak [token] end"],
   ["OAuth refresh token", `leak itnr_${BODY} end`, `itnr_${BODY}`, "leak [token] end"],
+  ["agent-runs token", `leak itnh_${BODY} end`, `itnh_${BODY}`, "leak [token] end"],
   ["at the start of the text", `itn_${BODY}`, `itn_${BODY}`, "[token]"],
   ["after = and before ;", `token=itn_${BODY};`, `itn_${BODY}`, "token=[token];"],
   ["after an underscore", `SPRINTREE_TOKEN_itn_${BODY}`, `itn_${BODY}`, "SPRINTREE_TOKEN_[token]"],

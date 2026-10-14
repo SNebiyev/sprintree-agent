@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -120,6 +120,24 @@ test("refresh reads the live list through the shared client (initialize, initial
   assert.deepEqual(fetchImpl.calls.map((c) => c.body.method), ["initialize", "notifications/initialized", "tools/list"]);
   assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).tools.zeta_tool.properties.a.enum, ["x"]);
   await assert.rejects(refresh({ fetchImpl, env: {}, file }), /SPRINTREE_TOKEN/);
+});
+
+test("refresh keeps the agent-run tools, which only an agent-runs token lists, or reads them with SPRINTREE_RUNS_TOKEN", async () => {
+  const file = path.join(tmpDir("ct-"), "snap.json");
+  writeFileSync(file, JSON.stringify({ tools: { get_run: { properties: { run: {} }, required: [] }, old_tool: { properties: {}, required: [] } } }));
+  const lists = { "Bearer itn_full_token_000000": [{ name: "search_issues", inputSchema: {} }], "Bearer itnh_runs_token_00000": [{ name: "get_run", inputSchema: { properties: { since: {} } } }] };
+  const answering = async (url, init) => {
+    const b = JSON.parse(init.body);
+    const result = b.method === "tools/list" ? { tools: lists[init.headers.Authorization] } : {};
+    return { ok: true, status: 200, headers: new Map(), text: async () => JSON.stringify({ jsonrpc: "2.0", id: b.id, result }) };
+  };
+  assert.equal(await refresh({ fetchImpl: answering, env: { SPRINTREE_TOKEN: "itn_full_token_000000" }, file }), 2);
+  let tools = JSON.parse(readFileSync(file, "utf8")).tools;
+  assert.deepEqual(Object.keys(tools), ["get_run", "search_issues"], "kept from the snapshot; a tool gone from the server goes");
+  assert.deepEqual(tools.get_run.properties, { run: {} });
+  await refresh({ fetchImpl: answering, env: { SPRINTREE_TOKEN: "itn_full_token_000000", SPRINTREE_RUNS_TOKEN: "itnh_runs_token_00000" }, file });
+  tools = JSON.parse(readFileSync(file, "utf8")).tools;
+  assert.deepEqual(tools.get_run.properties, { since: {} }, "read again with the agent-runs token");
 });
 
 test("the checker prints and exits 0 when run directly", () => {

@@ -105,6 +105,27 @@ from this repo (or its contents) into your repo or custom instructions.
 
 Report a vulnerability: see `SECURITY.md`.
 
+## Agent runs (Claude Code, opt-in)
+
+When a session runs several subagents, Sprintree can keep a private record of where each one stands, so the main agent
+can `/clear` or compact without losing them. The plugin's hooks do the recording; the skill's `resume` mode reads it.
+
+- **Opt in:** in Sprintree, Settings -> API & MCP -> New token -> **Agent runs only** (tokens start with `itnh_`), then
+  `export SPRINTREE_RUNS_TOKEN=...` in the shell that starts Claude Code. That token reaches the agent-run tools and nothing
+  else, and the API refuses it. Without it every hook ends in a shell test: Node does not even start and nothing is sent.
+- **What is sent:** the repository folder's name (with a short hash of its path), each subagent's id and type, a heartbeat at
+  most once a minute per subagent, and a subagent's last message when it stops, cut to 3900 characters. Sprintree tokens,
+  common secret shapes (cloud and Git host keys, `password=`-style values, private keys, credentials in URLs) and control or
+  invisible characters are taken out first; that is a net, not a guarantee, so a subagent that prints other secrets sends them.
+  No transcript, no files.
+- **What comes back:** after `/clear`, a compaction or a resume, a short status of every lane (as data, not instructions);
+  on the next prompt after a subagent finished, one line saying so. `node skills/sprintree/scripts/runs.mjs status` shows it any time.
+- **Where it lives:** in your Sprintree account only. The web shows how many runs you have and deletes them all; your data
+  export holds the text. An idle run closes after a day, a closed one is deleted after 30 days.
+- **Turn it off:** unset `SPRINTREE_RUNS_TOKEN`, revoke the token, or disable the plugin (`/plugin`). A hook never fails a session:
+  no Node, no network or an old server all end silently, and a server that does not answer is left alone for five minutes.
+- The hooks are Claude Code's (`claude-hooks/hooks.json`). Gemini CLI and Codex get the skill and the MCP server as before.
+
 ## Configure (optional)
 
 Link the board in your repo's `AGENTS.md`/`CLAUDE.md`/`GEMINI.md` as `https://sprintree.com/p/<KEY>`, or add a

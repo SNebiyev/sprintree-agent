@@ -1668,7 +1668,7 @@ test("fuzz: 20k seeded random strings of escape sequences, controls, invisible c
   printed.forEach((out, i) => {
     const seen = decodeEscapes(out.replace(invisible, ""));
     if (out.includes("[token]")) masks++;
-    assert.ok(!/itn[ar]?_[A-Za-z0-9_-]{20,}/.test(seen) && !seen.includes(own), `${JSON.stringify(inputs[i])} -> ${JSON.stringify(out)}`);
+    assert.ok(!/itn[ahr]?_[A-Za-z0-9_-]{20,}/.test(seen) && !seen.includes(own), `${JSON.stringify(inputs[i])} -> ${JSON.stringify(out)}`);
     for (const b of tracked[i]) {
       for (let at = 0; at + 20 <= b.length; at++) {
         assert.ok(!seen.includes(b.slice(at, at + 20)), `20 characters of the body ${b} printed: ${JSON.stringify(inputs[i])} -> ${JSON.stringify(out)}`);
