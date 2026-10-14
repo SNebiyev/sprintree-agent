@@ -20,7 +20,7 @@ docker run --rm --network none -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12@
 rm -rf "$SCRATCH/gl" && git clone -q --no-local . "$SCRATCH/gl" && docker run --rm --network none -v "$SCRATCH/gl:/repo" zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f detect --source /repo --config /repo/.gitleaks.toml --log-opts=--all --no-banner
 ```
 Negative control (must FAIL and name the sprintree-token rule for each of these): in a throwaway git repo outside the worktree, commit a file with a fake
-`itn_`, `itna_` and `itnr_` token (one of them bare in prose), a token between underscores (`_itn_...._`), one after an underscore
+`itn_`, `itnh_`, `itna_` and `itnr_` token (one of them bare in prose), a token between underscores (`_itn_...._`), one after an underscore
 (`SPRINTREE_TOKEN_itn_....`), a percent-encoded one (`Bearer%20itn_....`, `token%3Ditnr_....`) and a `\u005f`-escaped one (`itna\u005f....`), plus a line of plain prose,
 `keyitn_....` and `itnac_....` that must NOT be flagged (that is the gitleaks rule only: it skips a token glued to a word, while st.mjs hides that one too). Run the same gitleaks command
 with `--config /repo/.gitleaks.toml` copied there and read the findings (rule, line), not just the exit code.
@@ -39,4 +39,4 @@ Evidence is the output (`# pass N`, `# fail 0`, `no leaks found`), not the exit 
 
 ## Traps
 - `cp`/`rm` are `-i` aliases here: use `/bin/cp -f`.
-- Tokens must never appear in fixtures except obviously fake ones (`.gitleaks.toml` has a rule for `itn_`, `itna_` and `itnr_` tokens).
+- Tokens must never appear in fixtures except obviously fake ones (`.gitleaks.toml` has a rule for `itn_`, `itnh_`, `itna_` and `itnr_` tokens).

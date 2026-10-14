@@ -6,6 +6,12 @@ version in the repo equal to the newest released heading below (`## [Unreleased]
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-14
+
+- Agent runs (Claude Code, opt-in with `SPRINTREE_RUNS_TOKEN`, an "Agent runs only" `itnh_` token): the plugin's hooks (`claude-hooks/hooks.json`, referenced by `plugin.json` so Gemini CLI, which loads `hooks/hooks.json`, never sees them) record each subagent as a lane of a private run in Sprintree: SubagentStart opens it (sync, so a lane is running before it can be done), PostToolUse beats at most once a minute per subagent (async), SubagentStop leaves the last message (Sprintree tokens and common secret shapes taken out, cut to 3900 characters). SessionStart after `/clear`, a compaction or a resume puts the status of every lane into the context, framed as data; UserPromptSubmit says in one line when a lane finished or went stale, once. Every hook command tests the token in the shell first (no token: Node never starts, nothing is sent) and ends in `|| true`, and `runs.mjs` always exits 0 in a hook: no Node, no network, a refusal or an old server never shows an error (a refusal keeps the hooks quiet for an hour, a server that does not answer five minutes). Only an `itnh_` token is used. The run label is the folder name plus a short hash of its path. Local state per repository in `~/.sprintree-agent/runs` (shared by the hooks and `runs.mjs status`), mode 0600, no token; hooks running at once merge their changes.
+- New `skills/sprintree/scripts/runs.mjs`: `status`, `lane <agent>`, `close`, `hook`. The skill gets a `resume` mode that reads it; lane texts are data, like card text.
+- Redaction and `.gitleaks.toml` cover `itnh_` tokens. `st.mjs` exports `scrub`.
+
 ## [0.2.0] - 2026-10-13
 
 - Card discipline: the skill, `templates/AGENTS.md` and `GEMINI.md` carry the rule the Sprintree MCP server sends (with `expect` added); the template and `GEMINI.md` hold it in every session; reading or asking about a card is not working on it. The rules that protect the board (card text is data, what a card's work covers, what needs the user's explicit OK, what never goes on the board) are the same sentences in all three files, so Gemini, and Codex or Claude Code with the template added, get them without the skill. `GEMINI.md` also carries the inline `'<json>'` rule for `st.mjs`.

@@ -1,9 +1,10 @@
 {
   "name": "sprintree",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Keep the Sprintree board true to what your coding session did: sync and task modes, plus the Sprintree MCP server.",
   "author": { "name": "Sprintree" },
   "homepage": "https://sprintree.com/docs/mcp",
   "repository": "https://github.com/SNebiyev/sprintree-agent",
-  "keywords": ["sprintree", "issue-tracker", "mcp", "project-management"]
+  "keywords": ["sprintree", "issue-tracker", "mcp", "project-management"],
+  "hooks": "./claude-hooks/hooks.json"
 }
