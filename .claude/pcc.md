@@ -40,6 +40,7 @@ Evidence is the output (`# pass N`, `# fail 0`, `no leaks found`), not the exit 
    Lanes after a fix are narrow (touched packages' tests, touched e2e specs); the full suite runs ONCE before ship (wide).
    Cost line in the report: `python3 -I /home/sn/Documents/Projects/claude-pcc/scripts/pcc-cost.py --project-dir ~/.claude/projects/<key> --since <batch start ISO>`
    (target for a 10-15 file delta: <= 600k tokens, <= 2 h).
+   Lanes for pcc-review are the `## gate` block only (step 1); steps 2-4 (review, push/CI, tag) are orchestrator-only and are never run as lanes.
 3. Push, then read CI on GitHub (`gh run list`/`gh run watch`): green on the pushed commit across 3 OS x Node 18.7.0/22/24. Red CI blocks.
 4. Green: `git tag -f pcc-clean HEAD`.
 
