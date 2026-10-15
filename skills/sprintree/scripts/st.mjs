@@ -27,7 +27,7 @@
  * it does not make the file safe to commit secrets in. Everything printed (server text, config, warnings, errors)
  * is stripped of terminal control sequences and invisible characters first (`stripControls`; what real text needs stays: one
  * ZWJ, ZWNJ, LRM or RLM between two visible characters (a combining mark belongs to the character before it), a variation selector after a base character, the three subdivision flags),
- * and Sprintree tokens (itn_, itnh_, itna_, itnr_, also percent-encoded or \u-escaped) are replaced by [token] wherever they stand, a token glued to a word
+ * and Sprintree tokens (itn_, itnh_, itna_, itnr_, itns_, also percent-encoded or \u-escaped) are replaced by [token] wherever they stand, a token glued to a word
  * included (stricter than .gitleaks.toml, which skips one: hiding a superset costs nothing).
  *
  * OAuth: this fallback client is PAT-only on purpose. When an agent connects the Sprintree MCP
@@ -47,7 +47,7 @@ import { fileURLToPath } from "node:url";
 
 // One version source. A constant (not a read of ../../../package.json) so it keeps working when
 // the skill folder is copied alone. A test (and scripts/check-version.mjs) keeps it equal to package.json.
-export const VERSION = "0.4.1";
+export const VERSION = "0.5.0";
 // The one minimum Node version: the runtime check, its message and package.json `engines.node` are built from
 // or tested against it, and so is the CI matrix. A test fails when a doc states another one.
 export const MIN_NODE = "18.7.0";
@@ -149,7 +149,7 @@ const SECRET_KEY_RE = /token|secret|password|(^|[^a-z])pat($|[^a-z])/i;
 // characters. They are hidden wherever they stand, whatever comes before the head (a word, a digit, a removed character): no exception,
 // so st.mjs hides a superset of what the gitleaks rule in .gitleaks.toml reports (that rule skips a token that continues a word).
 const TOKEN_BODY = "[A-Za-z0-9_-]";
-const TOKEN_HEAD = "itn[ahr]?_";
+const TOKEN_HEAD = "itn[ahrs]?_";
 const MASK = "[token]";
 // What the first pass of `scrub` writes in front of every mask: U+FDD0, a noncharacter (not meant for interchange, rare in real text, unlike a private-use character
 // such as U+E000, which Nerd Fonts and EUDC text use), which cleaning does not remove (a NUL is gone after it). The second pass merges a
@@ -643,7 +643,7 @@ function maskRuns(text, view, re, spans, masked) {
 
 /**
  * The configured token (at least 6 characters; a shorter one is no secret; `ownToken` has refused anything but token characters) and
- * anything shaped like a Sprintree token (itn_, itnh_, itna_, itnr_ and 20 body characters), whatever stands before it, replaced by [token],
+ * anything shaped like a Sprintree token (itn_, itnh_, itna_, itnr_, itns_ and 20 body characters), whatever stands before it, replaced by [token],
  * each together with the token characters behind it. They are looked for in the text as it is and, when it holds a hidden character or an
  * escape, in the view described above (the configured token also as it was written: an escape that starts before it can take its first
  * characters, `%41abcdef` reads as `Aabcdef`).
