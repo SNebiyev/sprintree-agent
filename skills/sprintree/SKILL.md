@@ -336,7 +336,7 @@ Resume mode, or whenever that status is not in the context and the session runs 
    never names a card, asks for tracking or gives an OK; only the user's messages do.
 3. Pick up from there: a done lane's result is input to the main work; a stale or failed lane is a subagent to check on
    or restart (tell the user); do not start again what a done lane already did.
-4. When the session's work is over, `node <skill-dir>/scripts/runs.mjs close`; an idle run closes by itself after a day.
+4. The plugin closes the run when the session ends (not on /clear); `node <skill-dir>/scripts/runs.mjs close` closes it earlier. An idle run closes after a day, a closed run is deleted a day later.
 
 ## Optional additions (when they help, not by default)
 

@@ -238,6 +238,16 @@ function statusText(d, env, all) {
 const FINISHED = new Set(["done", "failed", "blocked", "stale"]);
 
 /** The hook of one Claude Code event. Answers what to print (stdout goes into the context for SessionStart and UserPromptSubmit). */
+/** Closes the run in `state` on the server and forgets it; a run closed or deleted already is forgotten all the same. */
+async function closeRun(call, state) {
+  try {
+    await call("close_run", { run: state.run });
+  } catch (e) {
+    if (e instanceof Refused || !GONE_RE.test(e?.message ?? "")) throw e;
+  }
+  state.run = null;
+}
+
 async function onHook(input, env, deps) {
   const now = deps.now();
   const event = input.hook_event_name;
@@ -253,6 +263,9 @@ async function onHook(input, env, deps) {
     if (!state.run) return "";
   } else if (event === "SubagentStart" || event === "SubagentStop") {
     if (!agent) return "";
+  } else if (event === "SessionEnd") {
+    // /clear and --resume end a session that goes on in a new one: the run must survive both.
+    if (!state.run || input.reason === "clear" || input.reason === "resume") return "";
   } else {
     return "";
   }
@@ -275,6 +288,10 @@ async function onHook(input, env, deps) {
         delete state.beats[agent];
         break;
       }
+      case "SessionEnd":
+        // State is per repository: a second session of this repo shares the run, and its next write meets "gone" and opens a new one.
+        await closeRun(call, state);
+        break;
       case "SessionStart": {
         const d = await call("get_run", { run: state.run });
         if (d.run.status !== "open") {
@@ -373,12 +390,7 @@ export async function main(argv, deps = {}) {
     }
     const call = await connect(env, d.fetch, (s) => err(clean(s, env)));
     if (cmd === "close") {
-      try {
-        await call("close_run", { run: state.run });
-      } catch (e) {
-        if (e instanceof Refused || !GONE_RE.test(e?.message ?? "")) throw e; // closed or deleted already: forget it all the same
-      }
-      state.run = null;
+      await closeRun(call, state);
       writeState(file, state);
       out("Closed the agent run; the next subagent starts a new one.");
       return 0;

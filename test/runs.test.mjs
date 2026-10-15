@@ -55,7 +55,7 @@ const stateOf = (r) => {
 
 test("without SPRINTREE_RUNS_TOKEN a hook does nothing: no request, no output, no file", async () => {
   const s = server();
-  for (const ev of ["SubagentStart", "PostToolUse", "SubagentStop", "SessionStart", "UserPromptSubmit"]) {
+  for (const ev of ["SubagentStart", "PostToolUse", "SubagentStop", "SessionStart", "SessionEnd", "UserPromptSubmit"]) {
     const r = await hook({ hook_event_name: ev, agent_id: "a1" }, { fetch: s.fetch, token: "" });
     assert.equal(r.code, 0);
     assert.equal(r.out, "");
@@ -138,6 +138,46 @@ test("SessionStart after /clear tells the main agent where every lane stands, as
   assert.equal(stateOf(r).state.version, 6);
 });
 
+test("SessionEnd closes the run and forgets it, silently, for every reason but clear and resume", async () => {
+  for (const reason of ["prompt_input_exit", "logout", "other", undefined]) {
+    const dir = tmpDir("runs-");
+    await hook({ hook_event_name: "SubagentStart", agent_id: "a1" }, { fetch: server().fetch, dir });
+    const s = server();
+    const r = await hook({ hook_event_name: "SessionEnd", ...(reason ? { reason } : {}) }, { fetch: s.fetch, dir });
+    assert.equal(r.code, 0);
+    assert.equal(r.out, "", `silent (${reason})`);
+    assert.deepEqual(s.asked, [{ name: "close_run", args: { run: RUN } }], String(reason));
+    assert.equal(stateOf(r).state.run, null);
+  }
+});
+
+test("SessionEnd after /clear or --resume leaves the run open and asks nothing", async () => {
+  for (const reason of ["clear", "resume"]) {
+    const dir = tmpDir("runs-");
+    await hook({ hook_event_name: "SubagentStart", agent_id: "a1" }, { fetch: server().fetch, dir });
+    const s = server();
+    const r = await hook({ hook_event_name: "SessionEnd", reason }, { fetch: s.fetch, dir });
+    assert.equal(r.out, "");
+    assert.equal(s.fetch.calls.length, 0, reason);
+    assert.equal(stateOf(r).state.run, RUN, reason);
+  }
+});
+
+test("SessionEnd without a run asks nothing; a failing or refused close is silent and keeps the run for the idle close", async () => {
+  const s = server();
+  const none = await hook({ hook_event_name: "SessionEnd", reason: "other" }, { fetch: s.fetch });
+  assert.equal(none.code, 0);
+  assert.equal(s.fetch.calls.length, 0);
+  for (const bad of [{ refuse: true }, { unknown: true }]) {
+    const dir = tmpDir("runs-");
+    await hook({ hook_event_name: "SubagentStart", agent_id: "a1" }, { fetch: server().fetch, dir });
+    const r = await hook({ hook_event_name: "SessionEnd", reason: "other" }, { fetch: server(bad).fetch, dir });
+    assert.equal(r.code, 0);
+    assert.equal(r.out, "");
+    assert.equal(r.err, "");
+  }
+});
+
 test("SessionStart says nothing without a run, and forgets a closed one", async () => {
   const s = server({ status: "closed" });
   const dir = tmpDir("runs-");
@@ -218,7 +258,7 @@ test("hooks.json: every hook first tests the token in the shell and can never fa
   const doc = JSON.parse(readFileSync(path.join(ROOT, "claude-hooks", "hooks.json"), "utf8"));
   const plugin = JSON.parse(readFileSync(path.join(ROOT, ".claude-plugin", "plugin.json"), "utf8"));
   assert.equal(plugin.hooks, "./claude-hooks/hooks.json");
-  assert.deepEqual(Object.keys(doc.hooks).sort(), ["PostToolUse", "SessionStart", "Stop", "SubagentStart", "SubagentStop", "UserPromptSubmit"]);
+  assert.deepEqual(Object.keys(doc.hooks).sort(), ["PostToolUse", "SessionEnd", "SessionStart", "Stop", "SubagentStart", "SubagentStop", "UserPromptSubmit"]);
   for (const [event, groups] of Object.entries(doc.hooks)) {
     for (const g of groups) {
       for (const h of g.hooks) {

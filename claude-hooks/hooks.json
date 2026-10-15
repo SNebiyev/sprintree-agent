@@ -1,5 +1,5 @@
 {
-  "description": "Agent runs (opt-in: only with SPRINTREE_RUNS_TOKEN set): records where each subagent stands in Sprintree and tells the main agent after /clear or compaction. Without the token no command but a shell test runs and nothing is sent. Card reminders (always on, local only, SPRINTREE_HOOKS=off silences them): a short card-discipline note at session start and one check at stop after the session changed the board or read a card and then changed code. Without Node they do nothing.",
+  "description": "Agent runs (opt-in: only with SPRINTREE_RUNS_TOKEN set): records where each subagent stands in Sprintree and tells the main agent after /clear or compaction, and closes the run when the session ends (not on /clear). Without the token no command but a shell test runs and nothing is sent. Card reminders (always on, local only, SPRINTREE_HOOKS=off silences them): a short card-discipline note at session start and one check at stop after the session changed the board or read a card and then changed code. Without Node they do nothing.",
   "hooks": {
     "SubagentStart": [
       {
@@ -51,6 +51,17 @@
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/skills/sprintree/scripts/discipline.mjs\" SessionStart 2>/dev/null || true",
             "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -z \"$SPRINTREE_RUNS_TOKEN\" ] || node \"${CLAUDE_PLUGIN_ROOT}/skills/sprintree/scripts/runs.mjs\" hook 2>/dev/null || true",
+            "timeout": 10
           }
         ]
       }
