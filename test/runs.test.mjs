@@ -376,7 +376,8 @@ test("SessionEnd closes when the other session was last seen 20 minutes ago, or 
   const s3 = server();
   const c = await hook({ hook_event_name: "SessionEnd", reason: "clear", session_id: "me" }, { fetch: s3.fetch, dir: dir3, now: t + 1000 });
   assert.equal(s3.fetch.calls.length, 0);
-  assert.ok("me" in stateOf(c).state.sessions, "a cleared session is still alive");
+  assert.ok(!("me" in stateOf(c).state.sessions), "a cleared session id is forgotten, the run stays");
+  assert.equal(stateOf(c).state.run, RUN);
 });
 
 test("a refusal in text, an unknown tool in any case and a lane that is not there", async () => {

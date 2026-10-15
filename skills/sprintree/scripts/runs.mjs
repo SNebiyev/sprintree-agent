@@ -297,10 +297,21 @@ async function onHook(input, env, deps) {
   } else if (event === "SubagentStart" || event === "SubagentStop") {
     if (!agent) return "";
   } else if (event === "SessionEnd") {
-    // /clear and --resume end a session that goes on in a new one: the run must survive both.
-    if (!state.run || input.reason === "clear" || input.reason === "resume") return "";
+    if (!state.run) return "";
+    if (sid) delete objectOf(state.sessions)[sid];
+    // /clear and an in-session /resume end a session that goes on under a new id (its SessionStart marks that id): the run
+    // survives, but the ending id must not stay marked or a later exit would think this session is still alive.
+    if (input.reason === "clear" || input.reason === "resume") {
+      if (sid) {
+        try {
+          writeState(file, state, from);
+        } catch {
+          // a read-only home: nothing to remember
+        }
+      }
+      return "";
+    }
     if (sid) {
-      delete objectOf(state.sessions)[sid];
       // The run is per repository: while another session of it was seen lately the run stays open for it, with no request.
       if (Object.values(objectOf(state.sessions)).some((t) => now - t < SESSION_ACTIVE_MS)) {
         try {
