@@ -1,10 +1,10 @@
 # PCC adapter - sprintree-agent
 
 Protocol: the `pcc` skill. Only what is specific to this repo is here.
-Clean point: local git tag `pcc-clean` (moves to HEAD after a green sweep). Scope: `git diff --no-renames --name-only pcc-clean...HEAD`.
+Clean point: local git tag `pcc-clean` (moves to HEAD after a green sweep). Scope: `git diff --no-renames --name-only pcc-clean...HEAD`. One range everywhere: `pcc-clean...HEAD` (three dots) for the review `range`, for `changedLines` (`git diff --numstat`) and for `security`, so security is computed from the same files the reviewer sees.
 low_risk_paths: ^(CHANGELOG|CONTRIBUTING)\.md$|^docs/maintainers/RESEARCH\.md$|^test/(lint-json|version)\.test\.mjs$
-<!-- security = true unless EVERY changed file matches low_risk_paths: `git diff --no-renames --name-only <range> | command grep -Evq '<regex>'` (`command grep`: Claude Code's grep shell function (ugrep) exits 1 on `-vq` over stdin, which would make security false) (exit 0 = some file is not low-risk = security=true). A missing line means security=true. -->
-<!-- Not low-risk on purpose (SPD-1212): README.md is the install and token-handling surface users copy from (install source, read-only token, env var not plain-text config, revoke); test/st.test.mjs, runs.test.mjs and tools.test.mjs are the regression net for token hiding, terminal-control stripping and token separation, and test/docs.test.mjs keeps the gitleaks rule equal to st.mjs redaction and bans pipe/stdin forms for untrusted text, so a large delta that weakens them must still get the security lens. lint-json and version tests stay low-risk: they only read manifests and version strings. Listed by name: a new test file is not low-risk until it is added here. -->
+<!-- security = true unless EVERY changed file matches low_risk_paths: `git diff --no-renames --name-only <range> | command grep -Evq '<regex>'` (`command grep`: Claude Code's grep shell function (ugrep) exits 1 on `-vq` over stdin, which would make security false) (exit 0 = some file is not low-risk = security=true). A missing line means security=true. An EMPTY changed-file list means the range is wrong (`printf '' | command grep -Evq RE` exits 1, i.e. security=false): stop and fix the range, never treat it as security=false. -->
+<!-- Not low-risk on purpose (SPD-1212): README.md is the install and token-handling surface users copy from (install source, read-only token, env var not plain-text config, revoke); test/st.test.mjs, runs.test.mjs and tools.test.mjs are the regression net for token hiding, terminal-control stripping and token separation, and test/docs.test.mjs keeps the gitleaks rule equal to st.mjs redaction and bans pipe/stdin forms for untrusted text, so a large delta that weakens them must still get the security lens. lint-json and version tests stay low-risk: they read manifests and version strings, and spawn check-version.mjs with the token blanked. Listed by name: a new test file is not low-risk until it is added here. -->
 No tag yet: the first sweep covers the WHOLE repo (there was never a clean point; three pushes `746c774`, `22287a9`, `86a1f1e` went out without PCC).
 
 **Rule: nothing is pushed to master before a green sweep.** Not a one-line fix, not docs.
@@ -32,13 +32,13 @@ Evidence is the output (`# pass N`, `# fail 0`, `no leaks found`), not the exit 
 
 ## sweep
 1. Gate above.
-2. Review (PCC v2, once per batch): `Workflow({name: "pcc:pcc-review", args: {repo, range: "<base>..<head>", changedLines, security, tier?, fix?, lanes?}})`.
+2. Review (PCC v2, once per batch): `Workflow({name: "pcc:pcc-review", args: {repo, range: "pcc-clean...HEAD", changedLines, security, tier?, fix?, lanes?}})`.
    `security` comes from `low_risk_paths:` at the top of this file (true unless every changed file is low-risk). Agents: `tier: 'docs'` (prose-only delta) = one agent; under 100 changed
    lines = one Opus agent; 100+ lines = three (security, correctness, simplify) when security=true (some changed file is outside low_risk_paths), else two (correctness + simplify).
    Severity gate: HIGH blocks; MEDIUM inside the delta is fixed in the same fix commit; out-of-delta MEDIUM, LOW and nits become cards/debt and are NOT
    fixed in this run. Mechanical gates (lint, typecheck, tests) stay fix-everything. With `fix: true` one sonnet fixer makes one commit, then ONE Opus
    fix-check reads only that fix diff; at most 2 fix cycles, then `structural`. There are no review rounds. `blocked` or `uncovered` is not a ship.
-   Lanes after a fix are narrow (touched packages' tests, touched e2e specs); the full suite runs ONCE before ship (wide).
+   This repo has no packages and no e2e: after a fix run `npm test` (seconds); the full gate (both Node versions, plugin validate, actionlint, gitleaks over a clone) runs ONCE before the push.
    Cost line in the report: `python3 -I /home/sn/Documents/Projects/claude-pcc/scripts/pcc-cost.py --project-dir ~/.claude/projects/<key> --since <batch start ISO>`
    (target for a 10-15 file delta: <= 600k tokens, <= 2 h).
    Lanes for pcc-review are the `## gate` block only (step 1); steps 2-4 (review, push/CI, tag) are orchestrator-only and are never run as lanes.

@@ -24,8 +24,7 @@ task, follow the full `sprintree` skill if it is installed (its `SKILL.md`). The
 
 ## Card discipline
 
-This holds in every session, next to the Rules below. It is the rule the Sprintree MCP server sends,
-with `expect` added:
+This holds in every session, next to the Rules below. It is the rule the Sprintree MCP server sends:
 
 When the user has you work on a Sprintree card or asks you to track work here: move that card to
 in_progress (`update_issue_status`, with `expect`) when you start; new work or a finding gets its

@@ -49,7 +49,7 @@ Four hard rules:
    file:line), host names and non-public IP addresses, personal or customer data, and content from
    other projects or repos; quote the minimal line, never whole logs or dumps.
 
-Card discipline is the rule the Sprintree MCP server sends, with `expect` added. It holds in every
+Card discipline is the rule the Sprintree MCP server sends. It holds in every
 session, next to the hard rules above:
 
 When the user has you work on a Sprintree card or asks you to track work here: move that card to
