@@ -6,6 +6,8 @@ version in the repo equal to the newest released heading below (`## [Unreleased]
 
 ## [Unreleased]
 
+- SPD-1017: CI job `install-smoke` installs the plugin with the real Claude Code, Codex and Gemini CLIs (pinned versions, no login, the CLIs other than claude-code installed without install scripts, checkout without a stored token) on Ubuntu, macOS and Windows, from a copy of the repo in a folder with a space in its path, and checks each CLI lists it; `st.mjs config` is checked there too (bash, and PowerShell on Windows).
+
 ## [0.4.0] - 2026-10-15
 
 - SPD-1099: Claude Code card-reminder hooks. At session start, a short card-discipline reminder in Sprintree projects (a `.sprintree.json` or a `sprintree.com/p/<KEY>` link).

@@ -101,6 +101,46 @@ test("CI runs the full suite on exactly MIN_NODE (not on a floating 18) and PCC 
   assert.match(pcc, /npm test/);
 });
 
+const CLI_PACKAGES = ["@anthropic-ai/claude-code", "@openai/codex", "@google/gemini-cli"];
+// Returns the problems with the CLI pins in the install-smoke job of a workflow text (empty when fine).
+const installSmokePinProblems = (wf) => {
+  const start = wf.indexOf("\n  install-smoke:");
+  if (start < 0) return ["install-smoke job missing"];
+  const rest = wf.slice(start + 1);
+  const next = rest.slice(1).search(/^  [A-Za-z0-9_-]+:/m);
+  const job = next < 0 ? rest : rest.slice(0, next + 1);
+  const problems = [];
+  const installLines = job.split("\n").filter((l) => /\bnpm\s+(install|i|add)\b.*(\s-g\b|\s--global\b)|\bnpm\s+(-g|--global)\s+(install|i|add)\b/.test(l));
+  const pinned = new Set();
+  for (const line of installLines) {
+    for (const tok of line.split(/\s+/).filter((t) => /^@?[a-z0-9][\w.-]*(\/[\w.-]+)?(@.*)?$/i.test(t) && !/^(npm|install|i|add|run)$/.test(t) && !t.startsWith("-"))) {
+      if (/^(npm|install|i|add)$/.test(tok)) continue;
+      if (!/^@?[^@\s]+@\d+\.\d+\.\d+$/.test(tok)) problems.push(`not an exact version: ${tok}`);
+      else pinned.add(tok.replace(/@\d+\.\d+\.\d+$/, ""));
+    }
+  }
+  for (const pkg of CLI_PACKAGES) {
+    if (!pinned.has(pkg)) problems.push(`${pkg} is not pinned on an npm install -g line`);
+    const unpinned = new RegExp(`${pkg.replace(/[/.]/g, "\\$&")}(?!@\\d+\\.\\d+\\.\\d+(?![\\w.-]))`, "g");
+    if (unpinned.test(job.replace(/^\s*#.*$/gm, ""))) problems.push(`${pkg} appears in the job without an exact pin`);
+  }
+  if (/@latest/.test(job)) problems.push("@latest");
+  return problems;
+};
+
+test("CI has an install-smoke job on all three OSes with every npm install -g package pinned to an exact version", () => {
+  const wf = read(".github/workflows/test.yml");
+  assert.deepEqual(installSmokePinProblems(wf), []);
+  const job = wf.slice(wf.indexOf("  install-smoke:"));
+  for (const os of ["ubuntu-latest", "macos-latest", "windows-latest"]) assert.ok(job.includes(os), os);
+  // negative controls: the check can fail
+  const smoke = (extra) => wf.replace("npm install -g --ignore-scripts", `${extra}\n          npm install -g --ignore-scripts`);
+  assert.ok(installSmokePinProblems(smoke("npm i -g @google/gemini-cli")).length > 0, "an unpinned extra install passes");
+  assert.ok(installSmokePinProblems(smoke("npm install -g left-pad")).length > 0, "an unpinned other package passes");
+  assert.ok(installSmokePinProblems(wf.replace("@google/gemini-cli@0.61.0", "@google/gemini-cli@0.61.0-beta.1")).length > 0, "a prerelease pin passes");
+  assert.ok(installSmokePinProblems(wf.replace("@openai/codex@0.156.1", "@openai/codex")).length > 0, "an unpinned CLI passes");
+});
+
 test("line endings are LF, so a Windows checkout reads the same files", () => {
   assert.match(read(".gitattributes"), /^\* text=auto eol=lf$/m);
 });

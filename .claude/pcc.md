@@ -28,7 +28,7 @@ Negative control (must FAIL and name the sprintree-token rule for each of these)
 `keyitn_....` and `itnac_....` that must NOT be flagged (that is the gitleaks rule only: it skips a token glued to a word, while st.mjs hides that one too). Run the same gitleaks command
 with `--config /repo/.gitleaks.toml` copied there and read the findings (rule, line), not just the exit code.
 The tools are pinned (actionlint 1.7.12, gitleaks v8.30.1, Node 18.7.0 and 24.21.0): bump them on purpose, in a commit of their own, and re-run the negative control.
-Evidence is the output (`# pass N`, `# fail 0`, `no leaks found`), not the exit code. Keep this a superset of `.github/workflows/test.yml`.
+Evidence is the output (`# pass N`, `# fail 0`, `no leaks found`), not the exit code. The local gate covers the `node-tests` job of `.github/workflows/test.yml`; the `install-smoke` job needs clean machines on 3 OSes and runs only in CI.
 
 ## sweep
 1. Gate above.
@@ -47,7 +47,7 @@ Evidence is the output (`# pass N`, `# fail 0`, `no leaks found`), not the exit 
 
 ## Lanes this repo does not have
 - Live-server tests: `test/tools.snapshot.json` is refreshed by hand (`npm run tools:refresh`, needs a token), never in CI.
-- Per-client install tests: tracked in SPD-978 phase B.
+- Per-client install tests (`install-smoke`): CI only, see the gate note above.
 
 ## Traps
 - `cp`/`rm` are `-i` aliases here: use `/bin/cp -f`.
