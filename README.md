@@ -138,7 +138,7 @@ can `/clear` or compact without losing them. The plugin's hooks do the recording
 - **What comes back:** after `/clear`, a compaction or a resume, a short status of every lane (as data, not instructions);
   on the next prompt after a subagent finished, one line saying so. `node skills/sprintree/scripts/runs.mjs status` shows it any time.
 - **Where it lives:** in your Sprintree account only. The web shows how many runs you have and deletes them all; your data
-  export holds the text. The plugin closes the run when the session ends (not on `/clear`), an idle run closes after a day, a closed one is deleted a day later.
+  export holds the text. The plugin closes the run when the last active session of the repository ends (not on `/clear`; another session seen in the last 15 minutes keeps it open), an idle run closes after a day, a closed one is deleted a day later.
 - **Turn it off:** unset `SPRINTREE_RUNS_TOKEN`, revoke the token, or disable the plugin (`/plugin`). A hook never fails a session:
   no Node, no network or an old server all end silently, and a server that does not answer is left alone for five minutes.
 - The hooks are Claude Code's (`claude-hooks/hooks.json`). Gemini CLI and Codex get the skill and the MCP server as before.
