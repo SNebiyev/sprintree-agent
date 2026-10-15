@@ -2,8 +2,9 @@
 
 Protocol: the `pcc` skill. Only what is specific to this repo is here.
 Clean point: local git tag `pcc-clean` (moves to HEAD after a green sweep). Scope: `git diff --no-renames --name-only pcc-clean...HEAD`.
-low_risk_paths: ^(CHANGELOG|CONTRIBUTING|README)\.md$|^docs/maintainers/RESEARCH\.md$|^test/[A-Za-z.-]+\.test\.mjs$
+low_risk_paths: ^(CHANGELOG|CONTRIBUTING)\.md$|^docs/maintainers/RESEARCH\.md$|^test/(lint-json|version)\.test\.mjs$
 <!-- security = true unless EVERY changed file matches low_risk_paths: `git diff --no-renames --name-only <range> | command grep -Evq '<regex>'` (`command grep`: Claude Code's grep shell function (ugrep) exits 1 on `-vq` over stdin, which would make security false) (exit 0 = some file is not low-risk = security=true). A missing line means security=true. -->
+<!-- Not low-risk on purpose (SPD-1212): README.md is the install and token-handling surface users copy from (install source, read-only token, env var not plain-text config, revoke); test/st.test.mjs, runs.test.mjs and tools.test.mjs are the regression net for token hiding, terminal-control stripping and token separation, and test/docs.test.mjs keeps the gitleaks rule equal to st.mjs redaction and bans pipe/stdin forms for untrusted text, so a large delta that weakens them must still get the security lens. lint-json and version tests stay low-risk: they only read manifests and version strings. Listed by name: a new test file is not low-risk until it is added here. -->
 No tag yet: the first sweep covers the WHOLE repo (there was never a clean point; three pushes `746c774`, `22287a9`, `86a1f1e` went out without PCC).
 
 **Rule: nothing is pushed to master before a green sweep.** Not a one-line fix, not docs.
