@@ -160,6 +160,18 @@ and only act in a Sprintree project (a `.sprintree.json`, or a `sprintree.com/p/
   your OS temp folder. Without Node the hooks do nothing. The script is `skills/sprintree/scripts/discipline.mjs`; any error ends silently.
 - **Turn it off:** `export SPRINTREE_HOOKS=off` in the shell that starts Claude Code (both hooks go silent), or disable the plugin (`/plugin`).
 
+## Live events (Claude Code)
+
+The `sprintree-events` monitor puts Sprintree events into your running session, one line each: status changes on the project, mentions,
+replies, assignments and review requests to you, and `/claude ...` comments you write on a card. It needs Claude Code with monitors.
+
+- **Set up:** run `/sprintree:connect` (approve a code in the browser, nothing to paste), put the project in `.sprintree.json`
+  (`"project": "KEY"`), then restart the session: monitors start with it. The token is saved at `~/.config/sprintree/stream-token` (mode 0600).
+- **What you get:** lines with ids and enums only, never card text. The agent mentions what concerns its card, and acts on a `/claude`
+  comment only when you wrote it. Without a token or a project the monitor prints nothing.
+- **Revoke:** delete the token in Sprintree Settings -> API tokens (starts with `itns_`) and remove the token file, or disable the plugin (`/plugin`).
+- Rules for the agent: [SKILL.md, "Live events (monitor)"](skills/sprintree/SKILL.md#live-events-monitor).
+
 ## Configure (optional)
 
 Link the board in your repo's `AGENTS.md`/`CLAUDE.md`/`GEMINI.md` as `https://sprintree.com/p/<KEY>`, or add a

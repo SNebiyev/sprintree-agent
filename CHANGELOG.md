@@ -6,6 +6,10 @@ version in the repo equal to the newest released heading below (`## [Unreleased]
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-16
+
+- SPD-1080: live events. The `sprintree-events` monitor (`monitors/monitors.json`, picked up from its default location, silent without a token or a project) runs `skills/sprintree/scripts/listen.mjs`, which prints one line per Sprintree event of the project from `/api/stream`, and `/sprintree:connect` (`commands/connect.md`, `connect.mjs`) gets an `itns_` live-events token with the device flow and saves it 0600 under `~/.config/sprintree/stream-token`. Redaction and `.gitleaks.toml` cover `itns_` tokens.
+
 ## [0.4.1] - 2026-10-15
 
 - SPD-1263: a Claude Code `SessionEnd` hook closes the agent run when the last active session of the repository ends, so a run no longer stays open for a day. The local state keeps when each session was last seen (`sessions`, no network call, pruned after a day); another session seen in the last 15 minutes keeps the run open. `/clear` and an in-session `/resume` end a session too but leave the run open (the SessionStart hook of the new session reads it back); quitting and then running `claude --resume` starts without the run; a crashed session's run still closes after a day idle, and a closed run is deleted a day later (was 30 days). The hook is gated on `SPRINTREE_RUNS_TOKEN` like the others, prints nothing and fails silently.

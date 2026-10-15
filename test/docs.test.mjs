@@ -215,7 +215,7 @@ test("the gitleaks rule reports what TOKEN_CASES says, in the decoded text, as g
     assert.equal(re.exec(decodeEscapes(text))?.[1] ?? null, token, name);
     if (token !== null) assert.notEqual(redacted, text, `${name}: gitleaks flags it, st.mjs must redact it`);
   }
-  for (const prefix of ["itn_", "itna_", "itnr_"]) assert.ok(toml.includes(`"${prefix}"`), `keyword ${prefix}`);
+  for (const prefix of ["itn_", "itnh_", "itna_", "itnr_", "itns_"]) assert.ok(toml.includes(`"${prefix}"`), `keyword ${prefix}`);
 });
 
 test("inline JSON is only for plain typed words: every doc that carries the rule states it, and no example breaks it", () => {
