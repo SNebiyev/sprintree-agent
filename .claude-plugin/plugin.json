@@ -1,6 +1,6 @@
 {
   "name": "sprintree",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Keep the Sprintree board true to what your coding session did: sync and task modes, plus the Sprintree MCP server.",
   "author": { "name": "Sprintree" },
   "homepage": "https://sprintree.com/docs/mcp",
