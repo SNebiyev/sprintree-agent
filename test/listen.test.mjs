@@ -6,7 +6,7 @@ import { createServer } from "node:http";
 import path from "node:path";
 import test from "node:test";
 import { BODY, ROOT, childEnv, tmpDir } from "../test-support/helpers.mjs";
-import { formatEvent, sessionId, sseParser } from "../skills/sprintree/scripts/listen.mjs";
+import { dedupe, formatEvent, sessionId, sseParser } from "../skills/sprintree/scripts/listen.mjs";
 
 const SCRIPT = path.join(ROOT, "skills", "sprintree", "scripts", "listen.mjs");
 const TOKEN = `itns_${BODY}`;
@@ -350,4 +350,45 @@ test("formatEvent and sessionId", () => {
   assert.equal(sessionId({ CLAUDE_CODE_SESSION_ID: "a" }), sessionId({ CLAUDE_CODE_SESSION_ID: "a" }));
   assert.notEqual(sessionId({ CLAUDE_CODE_SESSION_ID: "a" }), sessionId({ CLAUDE_CODE_SESSION_ID: "b" }));
   assert.match(sessionId({}), /^[0-9a-f-]{36}$/);
+});
+
+test("a frame whose ev was already printed is dropped, also after a reconnect; batch and summary are never deduped", async () => {
+  const note = { type: "notification", kind: "mention", issue: "SPD-1", actor: "ann", ev: "n1" };
+  const status = { type: "status", issue: "SPD-1", from: "todo", to: "done", actor: "ann", ev: "n1" };
+  const batch = { type: "batch", count: 2, to: "done", actor: "x" };
+  const srv = await fake((req, res, n) => {
+    if (n === 1) {
+      sse(res, frame("hello", HELLO), frame("sprintree", note, "a1"), frame("sprintree", note, "a2"), frame("sprintree", batch, "a3"), frame("sprintree", batch, "a4"));
+      setTimeout(() => res.end(), 30);
+    } else {
+      sse(res, frame("hello", HELLO), frame("sprintree", note, "a5"), frame("sprintree", status, "a6"), frame("sprintree", { ...note, ev: "n2" }, "a7"));
+    }
+  });
+  const p = start(srv.url);
+  try {
+    await p.until(5);
+    await new Promise((r) => setTimeout(r, 200));
+    assert.deepEqual(p.lines, [
+      "sprintree-events connected · session=s-1 · name=main · project=SPD",
+      "SPD-1 · mention · @ann · ev=n1",
+      "2 cards → done · @x",
+      "2 cards → done · @x",
+      "SPD-1 · status todo→done · @ann · ev=n1",
+      "SPD-1 · mention · @ann · ev=n2",
+    ]);
+    assert.ok(srv.requests.length >= 2);
+  } finally {
+    await p.quit();
+    await srv.close();
+  }
+});
+
+test("dedupe: a repeat is reported, the oldest key is evicted past the cap", () => {
+  const seen = dedupe(2);
+  assert.equal(seen("a"), false);
+  assert.equal(seen("a"), true);
+  assert.equal(seen("b"), false);
+  assert.equal(seen("c"), false); // evicts a
+  assert.equal(seen("b"), true);
+  assert.equal(seen("a"), false); // a was evicted, so it is new again
 });

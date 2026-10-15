@@ -344,7 +344,7 @@ With a stream token (`/sprintree:connect`) and a project in `.sprintree.json`, t
 into the session: status changes, mentions, replies, assignments and review requests to you, `/claude` commands, batched moves, and a
 "while you were away" summary on reconnect. Your own MCP actions are not echoed back. Lines carry ids and enums only, never card text.
 
-Line shapes (`ev` is the event id; ` · claim first` is appended when the server wants a claim):
+Line shapes (`ev` is the event id; a line whose `ev` was already printed is not printed again; ` · claim first` is appended when the server wants a claim):
 
 - `KEY-12 · status todo→in_progress · @actor · ev=ID`
 - `KEY-12 · <kind> · @actor · ev=ID` (a notification to you: mention, reply, assignment, review request)

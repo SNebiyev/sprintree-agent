@@ -76,6 +76,17 @@ export function projectOf(cwd, env) {
   return typeof key === "string" && KEY_RE.test(key) ? key : null;
 }
 
+/** A bounded memory of recent keys: seen(key) is true for a repeat, otherwise it remembers the key and evicts the oldest past `cap`. */
+export function dedupe(cap = 1000) {
+  const seen = new Set();
+  return (key) => {
+    if (seen.has(key)) return true;
+    seen.add(key);
+    if (seen.size > cap) seen.delete(seen.values().next().value);
+    return false;
+  };
+}
+
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
 /** The line for one `sprintree` frame (already parsed JSON), or null: unknown type, or a required field that is not valid. */
@@ -200,6 +211,7 @@ export async function main({ env = process.env, cwd = process.cwd(), write = (l)
   process.once("SIGINT", stop);
   process.stdout.on?.("error", stop); // the reader of our stdout is gone
 
+  const repeated = dedupe(1000); // the server may re-send recent frames after a reconnect
   let lastId;
   let helloLabel = null; // the label the server last said hello with
   let backoff = sec;
@@ -297,7 +309,9 @@ export async function main({ env = process.env, cwd = process.cwd(), write = (l)
       return;
     }
     const line = formatEvent(d);
-    if (line) out(line);
+    if (!line) return;
+    if ((d.type === "status" || d.type === "notification" || d.type === "command") && repeated(`${d.type}:${d.ev}`)) return;
+    out(line);
   }
 }
 
