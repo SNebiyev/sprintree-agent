@@ -84,8 +84,13 @@ jobs:
           set -euo pipefail
           COPY="$RUNNER_TEMP/sprintree agent"
           gemini extensions link "$COPY" --consent
-          gemini extensions list | tee gemini-list.txt
-          grep -q 'sprintree' gemini-list.txt
+          # gemini-cli 0.61.0 may end `extensions list` with a nonzero exit although it printed the list (read below), so the
+          # exit code is shown and the check is on the text
+          rc=0
+          gemini extensions list > gemini-list.txt 2>&1 || rc=$?
+          cat gemini-list.txt
+          echo "gemini extensions list exit code: $rc"
+          grep -q '✓ sprintree' gemini-list.txt
       - name: st.mjs config reads .sprintree.json (bash)
         shell: bash
         run: |
