@@ -16,6 +16,7 @@ const DEADLINE_EXPIRED = "The code expired. Run /sprintree:connect again. If you
 const posix = process.platform !== "win32";
 
 /** `tokenAnswers`: what POST /api/stream/device/token answers in turn, as [status, json]; the last one repeats. */
+/** The default start answer gives the full 570-unit window (the cap), so a slow runner does not hit the deadline in a test that waits for a token; tests meant to reach the deadline pass their own expires_in. */
 async function fake(tokenAnswers, start = {}, minGapMs = 0) {
   const calls = [];
   const server = createServer((req, res) => {
@@ -26,7 +27,7 @@ async function fake(tokenAnswers, start = {}, minGapMs = 0) {
       const send = (status, json) => res.writeHead(status, { "Content-Type": "application/json" }).end(JSON.stringify(json));
       if (req.url === "/api/stream/device") {
         const origin = `http://127.0.0.1:${server.address().port}`;
-        return send(200, { device_code: "dev-code-1", user_code: "ABCD-1234", verification_uri: `${origin}/connect`, verification_uri_complete: `${origin}/connect?code=ABCD-1234`, interval: 1, expires_in: 60, ...start });
+        return send(200, { device_code: "dev-code-1", user_code: "ABCD-1234", verification_uri: `${origin}/connect`, verification_uri_complete: `${origin}/connect?code=ABCD-1234`, interval: 1, expires_in: 570, ...start });
       }
       const n = calls.filter((c) => c.url === "/api/stream/device/token").length;
       const prev = calls.filter((c) => c.url === "/api/stream/device/token").at(-2); // the real server answers slow_down to a poll that comes too soon
