@@ -12,6 +12,7 @@ const SCRIPT = path.join(ROOT, "skills", "sprintree", "scripts", "connect.mjs");
 const TOKEN = `itns_${BODY}`;
 // Node 18 prints an ExperimentalWarning about fetch on stderr first: the script's own message is the last line
 const lastLine = (text) => text.trim().split("\n").pop();
+const DEADLINE_EXPIRED = "The code expired. Run /sprintree:connect again. If you approved it, revoke the unused stream token in Settings > API & MCP > Personal access tokens.";
 const posix = process.platform !== "win32";
 
 /** `tokenAnswers`: what POST /api/stream/device/token answers in turn, as [status, json]; the last one repeats. */
@@ -21,15 +22,16 @@ async function fake(tokenAnswers, start = {}) {
     let body = "";
     req.on("data", (d) => (body += d));
     req.on("end", () => {
-      calls.push({ url: req.url, method: req.method, body: body ? JSON.parse(body) : null, headers: req.headers });
+      calls.push({ at: Date.now(), url: req.url, method: req.method, body: body ? JSON.parse(body) : null, headers: req.headers });
       const send = (status, json) => res.writeHead(status, { "Content-Type": "application/json" }).end(JSON.stringify(json));
       if (req.url === "/api/stream/device") {
         const origin = `http://127.0.0.1:${server.address().port}`;
         return send(200, { device_code: "dev-code-1", user_code: "ABCD-1234", verification_uri: `${origin}/connect`, verification_uri_complete: `${origin}/connect?code=ABCD-1234`, interval: 1, expires_in: 60, ...start });
       }
       const n = calls.filter((c) => c.url === "/api/stream/device/token").length;
-      const [status, json] = tokenAnswers[Math.min(n, tokenAnswers.length) - 1];
+      const [status, json, raw] = typeof tokenAnswers === "function" ? tokenAnswers(n, calls) : tokenAnswers[Math.min(n, tokenAnswers.length) - 1];
       if (status === "drop") return req.socket.destroy(); // a network error
+      if (raw !== undefined) return res.writeHead(status, { "Content-Type": "text/plain" }).end(raw); // a body that is not JSON
       send(status, json);
     });
   });
@@ -45,7 +47,8 @@ async function run(srv, { home = tmpDir("sa-connect-"), extra = {} } = {}) {
   child.stdout.on("data", (d) => (out += d));
   child.stderr.on("data", (d) => (err += d));
   const code = await new Promise((r) => child.on("exit", r));
-  return { code, out, err, file: path.join(home, "cfg", "sprintree", "stream-token"), dir: path.join(home, "cfg", "sprintree") };
+  const exitAt = Date.now();
+  return { code, exitAt, out, err, file: path.join(home, "cfg", "sprintree", "stream-token"), dir: path.join(home, "cfg", "sprintree") };
 }
 
 // The real server envelope: {"error":{"kind","code","message"}}.
@@ -137,7 +140,7 @@ test("a server that keeps answering 502 ends with the expired message at the dea
   try {
     const r = await run(srv);
     assert.equal(r.code, 1);
-    assert.equal(lastLine(r.err), "The code expired. Run /sprintree:connect again.");
+    assert.equal(lastLine(r.err), DEADLINE_EXPIRED);
     assert.ok(!existsSync(r.file));
   } finally {
     await srv.close();
@@ -159,7 +162,7 @@ test("pending until expires_in ends: the code expired, exit 1", async () => {
   try {
     const r = await run(srv);
     assert.equal(r.code, 1);
-    assert.equal(lastLine(r.err), "The code expired. Run /sprintree:connect again.");
+    assert.equal(lastLine(r.err), DEADLINE_EXPIRED);
   } finally {
     await srv.close();
   }
@@ -177,15 +180,20 @@ test("the client name is the host name reduced to [A-Za-z0-9._-], at most 100 ch
   assert.equal(clientName(""), "computer");
 });
 
+const tokenCalls = (srv) => srv.calls.filter((c) => c.url === "/api/stream/device/token");
+
 test("expires_in 3600 is capped at 570 units: pending answers end with the expired message right after them", async () => {
   const srv = await fake([[400, env("authorization_pending")]], { interval: 1, expires_in: 3600 });
   try {
-    const t0 = Date.now();
     const r = await run(srv); // 5 ms per unit: 570 units are 2850 ms
-    const took = Date.now() - t0;
     assert.equal(r.code, 1);
-    assert.equal(lastLine(r.err), "The code expired. Run /sprintree:connect again.");
-    assert.ok(took >= 2700 && took < 2850 + 600, `took ${took} ms`);
+    assert.equal(lastLine(r.err), DEADLINE_EXPIRED);
+    // server-observed times only: the deadline counts from the process start, which is before the start POST arrives
+    const start = srv.calls[0];
+    const polls = tokenCalls(srv);
+    assert.ok(polls.at(-1).at - start.at < 570 * 5, `last poll at ${polls.at(-1).at - start.at} ms`);
+    assert.ok(polls.at(-1).at - start.at > 400 * 5, "the polls ran to the end of the window");
+    assert.ok(r.exitAt - start.at < 570 * 5 + 30, `closed at ${r.exitAt - start.at} ms`);
   } finally {
     await srv.close();
   }
@@ -194,14 +202,41 @@ test("expires_in 3600 is capped at 570 units: pending answers end with the expir
 test("transient errors grow the interval (at most 60 units) and the run still ends at the deadline, not one long sleep later", async () => {
   const srv = await fake([[502, {}]], { interval: 1, expires_in: 3600 });
   try {
-    const t0 = Date.now();
     const r = await run(srv, { extra: { SPRINTREE_CONNECT_TEST_SECOND_MS: "10" } }); // 570 units are 5700 ms
-    const took = Date.now() - t0;
     assert.equal(r.code, 1);
-    assert.equal(lastLine(r.err), "The code expired. Run /sprintree:connect again.");
-    // without the capped sleep the 16th uncapped step ends at 616 units (+460 ms); startup (~100 ms) is counted here but not by the deadline
-    assert.ok(took < 5700 + 300, `took ${took} ms`);
-    assert.ok(srv.calls.filter((c) => c.url === "/api/stream/device/token").length >= 10);
+    assert.equal(lastLine(r.err), DEADLINE_EXPIRED);
+    const start = srv.calls[0];
+    const polls = tokenCalls(srv);
+    assert.ok(polls.length >= 10);
+    // without the capped sleep the 16th uncapped step falls at 616 units; a regression that only drops the cap polls after 570
+    assert.ok(polls.at(-1).at - start.at < 570 * 10, `last poll at ${polls.at(-1).at - start.at} ms`);
+    assert.ok(r.exitAt - start.at < 570 * 10 + 30, `closed at ${r.exitAt - start.at} ms`);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("an approval in the last poll interval before the deadline is still fetched and saved", async () => {
+  // 10 ms per unit, interval 20 units, expires_in 60: the deadline is 600 ms, the plain polls fall at ~200 and ~400 ms
+  const srv = await fake((n, calls) => (Date.now() - calls[0].at >= 450 ? [200, { token: TOKEN }] : [400, env("authorization_pending")]), { interval: 20, expires_in: 60 });
+  try {
+    const r = await run(srv, { extra: { SPRINTREE_CONNECT_TEST_SECOND_MS: "10" } });
+    assert.equal(r.code, 0, r.err);
+    assert.match(r.out, /Connected\./);
+    assert.equal(readFileSync(r.file, "utf8"), `${TOKEN}\n`);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("a 200 whose body is not JSON: exit 1, the message says to revoke the unused stream token, nothing is saved", async () => {
+  const srv = await fake([[200, null, "<html>oops</html>"]]);
+  try {
+    const r = await run(srv);
+    assert.equal(r.code, 1);
+    assert.match(lastLine(r.err), /may have been created\. Revoke the unused stream token in Settings > API & MCP > Personal access tokens/);
+    assert.ok(!existsSync(r.file));
+    assert.equal(tokenCalls(srv).length, 1, "no retry");
   } finally {
     await srv.close();
   }

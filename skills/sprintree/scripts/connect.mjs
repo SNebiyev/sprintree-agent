@@ -73,10 +73,12 @@ async function post(origin, route, body, soft = false, timeoutMs = 15_000) {
   try {
     json = JSON.parse((await res.text()).slice(0, 65536));
   } catch {
-    // not JSON
+    // not JSON, or the body could not be read
   }
   return { status: res.status, json };
 }
+
+const EXPIRED_AT_DEADLINE = "The code expired. Run /sprintree:connect again. If you approved it, revoke the unused stream token in Settings > API & MCP > Personal access tokens.";
 
 const word = (v, max = 64) => (typeof v === "string" ? stripControls(v).replace(/\s+/g, " ").trim().slice(0, max) : "");
 
@@ -114,17 +116,24 @@ export async function main({ env = process.env, log = (l) => process.stdout.writ
     interval = Math.min(interval + 5, MAX_INTERVAL);
   };
   const expiresIn = Math.min(Math.max(Number(d.expires_in) || 600, 1), 3600);
-  // 30 s under the 600 s Bash timeout of commands/connect.md, so a last-second approval is still polled
+  // 30 s under the 600 s Bash timeout of commands/connect.md. The last FINAL of it is kept for one more poll,
+  // so an approval made after the previous poll is still fetched before the code is called expired
   const deadline = processStart + Math.min(expiresIn, 570) * unit;
   const MIN_REQUEST_MS = Math.max(1, Math.min(250, unit)); // less than this is left: no request is worth starting
+  const FINAL = Math.min(5 * unit, 15_000);
+  let last = false; // the poll inside the final window runs once, then the loop ends
   for (;;) {
-    const wait = Math.min(interval * unit, deadline - Date.now());
-    if (wait <= 0) break;
-    await new Promise((r) => setTimeout(r, wait));
+    if (last) break;
+    const wait = Math.min(interval * unit, deadline - Date.now() - FINAL);
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    else last = true;
     const remaining = deadline - Date.now();
     if (remaining < MIN_REQUEST_MS) break;
     const r = await post(base.origin, "/api/stream/device/token", { device_code: deviceCode }, true, Math.min(15_000, remaining));
-    if (r.status === 200 && r.json) {
+    if (r.status === 200 && (!r.json || typeof r.json !== "object")) {
+      throw new Failure(`The server answered 200 but the reply could not be read, so a token may have been created. Revoke the unused stream token in Settings > API & MCP > Personal access tokens, then run /sprintree:connect again.`);
+    }
+    if (r.status === 200) {
       const token = typeof r.json.token === "string" ? r.json.token.trim() : "";
       if (!isStreamToken(token)) throw new Failure("The server answered without a usable token. Nothing was saved.");
       const file = tokenFile(env);
@@ -155,7 +164,7 @@ export async function main({ env = process.env, log = (l) => process.stdout.writ
     }
     throw new Failure(`The server refused the connection (HTTP ${r.status}). Nothing was saved.`);
   }
-  throw new Failure("The code expired. Run /sprintree:connect again.");
+  throw new Failure(EXPIRED_AT_DEADLINE);
 }
 
 if (isMainModule(process.argv[1], import.meta.url)) {
