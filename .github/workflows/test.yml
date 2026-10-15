@@ -42,6 +42,8 @@ jobs:
       GEMINI_CLI_NO_RELAUNCH: "true"
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false # the tree, .git included, is copied into the plugin dir the CLIs read
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22
@@ -49,7 +51,11 @@ jobs:
       # codex 0.156.1 on 2026-09-23, gemini-cli 0.61.0 on 2026-09-24). Bump them on purpose, never to "latest".
       - name: Install the CLIs
         shell: bash
-        run: npm install -g --no-audit --no-fund @anthropic-ai/claude-code@2.1.281 @openai/codex@0.156.1 @google/gemini-cli@0.61.0
+        run: |
+          set -euo pipefail
+          # claude-code keeps its install script: its postinstall puts the native binary in place (without it `claude` stops with "native binary not installed")
+          npm install -g --no-audit --no-fund @anthropic-ai/claude-code@2.1.281
+          npm install -g --ignore-scripts --no-audit --no-fund @openai/codex@0.156.1 @google/gemini-cli@0.61.0
       - name: Copy the checkout to a path with a space
         shell: bash
         run: |
@@ -85,12 +91,8 @@ jobs:
           set -euo pipefail
           COPY="$RUNNER_TEMP/sprintree agent"
           gemini extensions link "$COPY" --consent
-          # the list goes to a file first (a `| tee` pipe under pipefail failed this step on every OS although the list was printed);
-          # the exit code is shown and the check is on the text
-          rc=0
-          gemini extensions list > gemini-list.txt 2>&1 || rc=$?
-          cat gemini-list.txt
-          echo "gemini extensions list exit code: $rc"
+          # `gemini extensions list` prints to stderr, so 2>&1 puts it in the file; under pipefail a non-zero gemini exit code fails this step
+          gemini extensions list 2>&1 | tee gemini-list.txt
           grep -q '✓ sprintree' gemini-list.txt
       - name: st.mjs config reads .sprintree.json (bash)
         shell: bash
