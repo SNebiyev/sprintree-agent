@@ -25,3 +25,85 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - run: npm test # node --test: client, tool-consistency check, version check, JSON manifests
+  # Installs the plugin with the real Claude Code, Codex and Gemini CLIs. No model login, no sprintree.com call: only the
+  # install commands from the README run, against a copy of the checkout in a folder with a space in its path.
+  install-smoke:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      CI: "1"
+      DISABLE_AUTOUPDATER: "1"
+      DISABLE_TELEMETRY: "1"
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+      GEMINI_CLI_NO_RELAUNCH: "true"
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+      # Exact versions, each published more than two weeks before this job was written (claude-code 2.1.281 on 2026-09-23,
+      # codex 0.156.1 on 2026-09-23, gemini-cli 0.61.0 on 2026-09-24). Bump them on purpose, never to "latest".
+      - name: Install the CLIs
+        shell: bash
+        run: npm install -g --no-audit --no-fund @anthropic-ai/claude-code@2.1.281 @openai/codex@0.156.1 @google/gemini-cli@0.61.0
+      - name: Copy the checkout to a path with a space
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp -R "$GITHUB_WORKSPACE" "$RUNNER_TEMP/sprintree agent"
+          mkdir -p "$HOME/.codex"
+          claude --version
+          codex --version
+          gemini --version
+      - name: Claude Code - validate, add the marketplace, install the plugin
+        shell: bash
+        run: |
+          set -euo pipefail
+          COPY="$RUNNER_TEMP/sprintree agent"
+          claude plugin validate "$COPY"
+          claude plugin marketplace add "$COPY"
+          claude plugin install sprintree@sprintree
+          claude plugin list | tee claude-list.txt
+          grep -q 'sprintree@sprintree' claude-list.txt
+      - name: Codex - add the marketplace, install the plugin
+        shell: bash
+        run: |
+          set -euo pipefail
+          COPY="$RUNNER_TEMP/sprintree agent"
+          codex plugin marketplace add "$COPY"
+          codex plugin add sprintree@sprintree
+          codex plugin list | tee codex-list.txt
+          grep -Eq 'sprintree@sprintree +installed' codex-list.txt
+      - name: Gemini CLI - link the extension
+        shell: bash
+        run: |
+          set -euo pipefail
+          COPY="$RUNNER_TEMP/sprintree agent"
+          gemini extensions link "$COPY" --consent
+          gemini extensions list | tee gemini-list.txt
+          grep -q 'sprintree' gemini-list.txt
+      - name: st.mjs config reads .sprintree.json (bash)
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROJ="$RUNNER_TEMP/smoke project"
+          mkdir -p "$PROJ/.git"
+          printf '{"project":"SMOKE"}\n' > "$PROJ/.sprintree.json"
+          cd "$PROJ"
+          node "$RUNNER_TEMP/sprintree agent/skills/sprintree/scripts/st.mjs" config | tee config.txt
+          grep -q '"project": "SMOKE"' config.txt
+      - name: st.mjs config reads .sprintree.json (PowerShell)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $proj = Join-Path $env:RUNNER_TEMP 'smoke project ps'
+          New-Item -ItemType Directory -Force (Join-Path $proj '.git') | Out-Null
+          [System.IO.File]::WriteAllText((Join-Path $proj '.sprintree.json'), '{"project":"SMOKE"}', (New-Object System.Text.UTF8Encoding $false))
+          Set-Location $proj
+          $out = node (Join-Path $env:RUNNER_TEMP 'sprintree agent\skills\sprintree\scripts\st.mjs') config | Out-String
+          Write-Output $out
+          if ($out -notmatch '"project": "SMOKE"') { throw 'config does not name SMOKE' }

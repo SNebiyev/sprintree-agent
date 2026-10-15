@@ -101,6 +101,15 @@ test("CI runs the full suite on exactly MIN_NODE (not on a floating 18) and PCC 
   assert.match(pcc, /npm test/);
 });
 
+test("CI has an install-smoke job on all three OSes with pinned CLI versions", () => {
+  const wf = read(".github/workflows/test.yml");
+  const job = wf.slice(wf.indexOf("  install-smoke:"));
+  assert.ok(job.length > 20, "install-smoke job missing");
+  for (const os of ["ubuntu-latest", "macos-latest", "windows-latest"]) assert.ok(job.includes(os), os);
+  for (const pkg of ["@anthropic-ai/claude-code", "@openai/codex", "@google/gemini-cli"]) assert.match(job, new RegExp(`${pkg}@\\d+\\.\\d+\\.\\d+\\b`), `${pkg} is not pinned to an exact version`);
+  assert.ok(!/@latest/.test(job));
+});
+
 test("line endings are LF, so a Windows checkout reads the same files", () => {
   assert.match(read(".gitattributes"), /^\* text=auto eol=lf$/m);
 });
