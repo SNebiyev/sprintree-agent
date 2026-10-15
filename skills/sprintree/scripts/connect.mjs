@@ -55,7 +55,7 @@ export function saveToken(file, token) {
 }
 
 // `soft`: a network error or timeout answers { status: 0 } instead of throwing (the token poll retries it).
-async function post(origin, route, body, soft = false) {
+async function post(origin, route, body, soft = false, timeoutMs = 15_000) {
   let res;
   try {
     res = await fetch(`${origin}${route}`, {
@@ -63,7 +63,7 @@ async function post(origin, route, body, soft = false) {
       headers: { "Content-Type": "application/json", Accept: "application/json" },
       body: JSON.stringify(body),
       redirect: "manual",
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch {
     if (soft) return { status: 0, json: null };
@@ -81,6 +81,7 @@ async function post(origin, route, body, soft = false) {
 const word = (v, max = 64) => (typeof v === "string" ? stripControls(v).replace(/\s+/g, " ").trim().slice(0, max) : "");
 
 export async function main({ env = process.env, log = (l) => process.stdout.write(`${l}\n`) } = {}) {
+  const processStart = Date.now(); // the 570 s budget counts from here, the start POST included
   let base;
   try {
     base = baseUrl(env);
@@ -107,13 +108,22 @@ export async function main({ env = process.env, log = (l) => process.stdout.writ
   }
   if (sameSite && !env.SPRINTREE_CONNECT_NO_BROWSER) openBrowser(link);
 
-  let interval = Math.min(Math.max(Number(d.interval) || 5, 1), 60);
+  const MAX_INTERVAL = 60;
+  let interval = Math.min(Math.max(Number(d.interval) || 5, 1), MAX_INTERVAL);
+  const grow = () => {
+    interval = Math.min(interval + 5, MAX_INTERVAL);
+  };
   const expiresIn = Math.min(Math.max(Number(d.expires_in) || 600, 1), 3600);
   // 30 s under the 600 s Bash timeout of commands/connect.md, so a last-second approval is still polled
-  const deadline = Date.now() + Math.min(expiresIn, 570) * unit;
-  while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, interval * unit));
-    const r = await post(base.origin, "/api/stream/device/token", { device_code: deviceCode }, true);
+  const deadline = processStart + Math.min(expiresIn, 570) * unit;
+  const MIN_REQUEST_MS = Math.max(1, Math.min(250, unit)); // less than this is left: no request is worth starting
+  for (;;) {
+    const wait = Math.min(interval * unit, deadline - Date.now());
+    if (wait <= 0) break;
+    await new Promise((r) => setTimeout(r, wait));
+    const remaining = deadline - Date.now();
+    if (remaining < MIN_REQUEST_MS) break;
+    const r = await post(base.origin, "/api/stream/device/token", { device_code: deviceCode }, true, Math.min(15_000, remaining));
     if (r.status === 200 && r.json) {
       const token = typeof r.json.token === "string" ? r.json.token.trim() : "";
       if (!isStreamToken(token)) throw new Failure("The server answered without a usable token. Nothing was saved.");
@@ -127,7 +137,7 @@ export async function main({ env = process.env, log = (l) => process.stdout.writ
     if (r.status === 400) {
       if (code === "authorization_pending") continue;
       if (code === "slow_down") {
-        interval += 5;
+        grow();
         continue;
       }
       if (code === "access_denied") throw new Failure("Denied in the browser. Nothing was saved.");
@@ -135,12 +145,12 @@ export async function main({ env = process.env, log = (l) => process.stdout.writ
     }
     if (r.status === 409 && code === "too_many_tokens") throw new Failure("This account already has 20 stream tokens. Revoke one in Settings, then run /sprintree:connect again.");
     if (r.status === 429) {
-      interval += 5;
+      grow();
       continue;
     }
     // a hiccup (network error, timeout, 5xx, 408) is waited out like a pending approval, until the deadline
     if (r.status === 0 || r.status === 408 || r.status >= 500) {
-      interval += 5;
+      grow();
       continue;
     }
     throw new Failure(`The server refused the connection (HTTP ${r.status}). Nothing was saved.`);

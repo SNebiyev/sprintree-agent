@@ -176,3 +176,33 @@ test("the client name is the host name reduced to [A-Za-z0-9._-], at most 100 ch
   assert.equal(clientName("a".repeat(150)).length, 100);
   assert.equal(clientName(""), "computer");
 });
+
+test("expires_in 3600 is capped at 570 units: pending answers end with the expired message right after them", async () => {
+  const srv = await fake([[400, env("authorization_pending")]], { interval: 1, expires_in: 3600 });
+  try {
+    const t0 = Date.now();
+    const r = await run(srv); // 5 ms per unit: 570 units are 2850 ms
+    const took = Date.now() - t0;
+    assert.equal(r.code, 1);
+    assert.equal(lastLine(r.err), "The code expired. Run /sprintree:connect again.");
+    assert.ok(took >= 2700 && took < 2850 + 600, `took ${took} ms`);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("transient errors grow the interval (at most 60 units) and the run still ends at the deadline, not one long sleep later", async () => {
+  const srv = await fake([[502, {}]], { interval: 1, expires_in: 3600 });
+  try {
+    const t0 = Date.now();
+    const r = await run(srv, { extra: { SPRINTREE_CONNECT_TEST_SECOND_MS: "10" } }); // 570 units are 5700 ms
+    const took = Date.now() - t0;
+    assert.equal(r.code, 1);
+    assert.equal(lastLine(r.err), "The code expired. Run /sprintree:connect again.");
+    // without the capped sleep the 16th uncapped step ends at 616 units (+460 ms); startup (~100 ms) is counted here but not by the deadline
+    assert.ok(took < 5700 + 300, `took ${took} ms`);
+    assert.ok(srv.calls.filter((c) => c.url === "/api/stream/device/token").length >= 10);
+  } finally {
+    await srv.close();
+  }
+});

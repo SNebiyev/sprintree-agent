@@ -72,6 +72,7 @@ export function projectOf(cwd, env) {
   } catch {
     // an unreadable or invalid config: fall back to the environment
   }
+  if (typeof key === "string") key = key.trim().toUpperCase();
   if (!key) key = (env.SPRINTREE_PROJECT || "").trim().toUpperCase();
   return typeof key === "string" && KEY_RE.test(key) ? key : null;
 }
@@ -126,9 +127,10 @@ export function formatEvent(d) {
     }
     case "batch": {
       const n = count(d.count);
-      const [to, actor] = [d.to, d.actor].map(field);
-      if (n === null || to === null || actor === null) return null;
-      return `${plural(n, "card", "cards")} → ${to} · @${actor}`.slice(0, LINE_MAX);
+      const to = field(d.to);
+      const who = by(d.actor);
+      if (n === null || to === null || who === null) return null;
+      return `${plural(n, "card", "cards")} → ${to}${who}`.slice(0, LINE_MAX);
     }
     case "summary": {
       const [m, st, c] = [d.mentions ?? 0, d.status ?? 0, d.commands ?? 0].map(count);

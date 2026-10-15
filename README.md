@@ -167,6 +167,7 @@ replies, assignments and review requests to you, and `/claude ...` comments you 
 
 - **Set up:** run `/sprintree:connect` (approve a code in the browser, nothing to paste), put the project in `.sprintree.json`
   (`"project": "KEY"`), then restart the session: monitors start with it. The token is saved at `~/.config/sprintree/stream-token` (mode 0600).
+- **Permissions:** tick Account settings when the plugin signs in to Sprintree's MCP (`/mcp`, sprintree): `set_stream_focus` and `claim_stream_event` need the `mcp:account` scope. Without it `/claude` commands are not acted on.
 - **What you get:** lines with ids and enums only, never card text. The agent mentions what concerns its card, and acts on a `/claude`
   comment only when you wrote it. Without a token or a project the monitor prints nothing.
 - **Revoke:** delete the token in Sprintree Settings → API & MCP → Personal access tokens (starts with `itns_`) and remove the token file, or disable the plugin (`/plugin`).

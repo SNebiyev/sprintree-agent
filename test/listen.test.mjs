@@ -6,7 +6,7 @@ import { createServer } from "node:http";
 import path from "node:path";
 import test from "node:test";
 import { BODY, ROOT, childEnv, tmpDir } from "../test-support/helpers.mjs";
-import { dedupe, formatEvent, sessionId, sseParser } from "../skills/sprintree/scripts/listen.mjs";
+import { dedupe, formatEvent, projectOf, sessionId, sseParser } from "../skills/sprintree/scripts/listen.mjs";
 
 const SCRIPT = path.join(ROOT, "skills", "sprintree", "scripts", "listen.mjs");
 const TOKEN = `itns_${BODY}`;
@@ -295,6 +295,22 @@ test("an empty actor leaves the actor part out of a status or notification line;
   assert.equal(formatEvent({ type: "notification", kind: "mention", issue: "SPD-1", actor: "ali", ev: "e2" }), "SPD-1 · mention · @ali · ev=e2");
   assert.equal(formatEvent({ type: "notification", kind: "mention", issue: "", actor: "", ev: "e2" }), null);
   assert.equal(formatEvent({ type: "status", issue: "SPD-1", from: "a", to: "b", actor: "", ev: "" }), null);
+});
+
+test("a batch line keeps an unknown actor: an empty or missing actor leaves the actor part out, a bad one drops the frame", () => {
+  assert.equal(formatEvent({ type: "batch", count: 3, to: "done", actor: "" }), "3 cards → done");
+  assert.equal(formatEvent({ type: "batch", count: 1, to: "done" }), "1 card → done");
+  assert.equal(formatEvent({ type: "batch", count: 3, to: "done", actor: "samir" }), "3 cards → done · @samir");
+  assert.equal(formatEvent({ type: "batch", count: 3, to: "done", actor: "a\nb" }), null);
+});
+
+test("projectOf upper-cases and trims a .sprintree.json project; a bad one falls back to the environment", () => {
+  const home = tmpDir("sa-listen-");
+  mkdirSync(path.join(home, ".git"));
+  writeFileSync(path.join(home, ".sprintree.json"), JSON.stringify({ project: "abc" }));
+  assert.equal(projectOf(home, { SPRINTREE_PROJECT: "ZZZ" }), "ABC");
+  writeFileSync(path.join(home, ".sprintree.json"), JSON.stringify({ project: "not a key" }));
+  assert.equal(projectOf(home, { SPRINTREE_PROJECT: " zzz " }), "ZZZ");
 });
 
 test("the token file and the .sprintree.json project are used; the project of the file wins over SPRINTREE_PROJECT", async () => {
