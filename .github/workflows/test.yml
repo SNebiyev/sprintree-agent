@@ -69,6 +69,7 @@ jobs:
           claude plugin install sprintree@sprintree
           claude plugin list | tee claude-list.txt
           grep -q 'sprintree@sprintree' claude-list.txt
+          grep -A4 'sprintree@sprintree' claude-list.txt | grep -q 'Status: ✔ enabled'
       - name: Codex - add the marketplace, install the plugin
         shell: bash
         run: |
@@ -77,7 +78,7 @@ jobs:
           codex plugin marketplace add "$COPY"
           codex plugin add sprintree@sprintree
           codex plugin list | tee codex-list.txt
-          grep -Eq 'sprintree@sprintree +installed' codex-list.txt
+          grep -Eq 'sprintree@sprintree +installed, enabled' codex-list.txt
       - name: Gemini CLI - link the extension
         shell: bash
         run: |
