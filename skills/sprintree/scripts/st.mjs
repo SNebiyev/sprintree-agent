@@ -47,7 +47,7 @@ import { fileURLToPath } from "node:url";
 
 // One version source. A constant (not a read of ../../../package.json) so it keeps working when
 // the skill folder is copied alone. A test (and scripts/check-version.mjs) keeps it equal to package.json.
-export const VERSION = "0.3.0";
+export const VERSION = "0.4.0";
 // The one minimum Node version: the runtime check, its message and package.json `engines.node` are built from
 // or tested against it, and so is the CI matrix. A test fails when a doc states another one.
 export const MIN_NODE = "18.7.0";
@@ -63,9 +63,9 @@ const MAX_TEXT_BYTES = 1024 * 1024; // config and doc files are small; anything 
 export const MAX_BODY_BYTES = 8 * 1024 * 1024;
 // The server's project key rule. Doc links and `.sprintree.json` are both checked against it.
 const KEY_CHARS = "[A-Za-z][A-Za-z0-9]{0,9}";
-const KEY_RE = new RegExp(`sprintree\\.com/p/(${KEY_CHARS})\\b`, "g");
+export const KEY_RE = new RegExp(`sprintree\\.com/p/(${KEY_CHARS})\\b`, "g");
 const PROJECT_RE = new RegExp(`^${KEY_CHARS}$`);
-const PLACEHOLDER_KEY = "KEY"; // the template link is https://sprintree.com/p/KEY
+export const PLACEHOLDER_KEY = "KEY"; // the template link is https://sprintree.com/p/KEY
 export const KNOWN_CONFIG_KEYS = ["project", "language", "typography", "statuses", "section_titles"];
 const DOC_FILES = ["AGENTS.md", "CLAUDE.md", "GEMINI.md", path.join(".claude", "CLAUDE.md")];
 export const DOC_NAMES = DOC_FILES.map((f) => f.split(path.sep).join("/"));

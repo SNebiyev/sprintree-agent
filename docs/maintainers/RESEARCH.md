@@ -40,6 +40,9 @@ https://learn.chatgpt.com/docs/build-skills.md (old developers.openai.com/codex/
   Installer: `$skill-installer <name>` (curated list or other repos).
 - Plugins: the page says plugins bundle skills, optional MCP config and assets, with a universal directory shared by ChatGPT and Codex,
   and points to https://developers.openai.com/plugins/build/plugins. NOT fetched or verified here, so no Codex plugin manifest is shipped.
+  Update 2026-10-15: verified by a real install probe (codex-cli 0.162.1, isolated CODEX_HOME/HOME, Linux). `codex plugin marketplace add SNebiyev/sprintree-agent`
+  reads the existing `.claude-plugin/marketplace.json`; `codex plugin add sprintree@sprintree` installs it, the skill shows as `sprintree:sprintree` and the MCP server
+  `sprintree` (OAuth) comes from the plugin's `.mcp.json`. No Codex-specific manifest is needed. The OAuth login itself was not run (needs a browser).
 - Custom prompts: not covered by the fetched pages (the old `~/.codex/prompts` mechanism may be deprecated in favour of skills - unverified).
 - Version: no CLI version stated on these pages. Local `codex` is installed but its version was not needed.
 

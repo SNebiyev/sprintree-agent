@@ -1,0 +1,370 @@
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+import { bashWrites } from "../skills/sprintree/scripts/discipline.mjs";
+
+const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
+const SCRIPT = path.join(ROOT, "skills", "sprintree", "scripts", "discipline.mjs");
+
+const tmp = () => mkdtempSync(path.join(tmpdir(), "hooks-"));
+const sid = () => `t-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+function hook(event, input, env = {}) {
+  const r = spawnSync(process.execPath, [SCRIPT, event], {
+    input: JSON.stringify(input),
+    encoding: "utf8",
+    env: { ...process.env, SPRINTREE_HOOKS: "", ...env },
+  });
+  return { code: r.status, out: r.stdout, err: r.stderr };
+}
+
+function project(files = { ".sprintree.json": "{}" }) {
+  const dir = tmp();
+  mkdirSync(path.join(dir, ".git"));
+  for (const [n, c] of Object.entries(files)) {
+    mkdirSync(path.dirname(path.join(dir, n)), { recursive: true });
+    writeFileSync(path.join(dir, n), c);
+  }
+  return dir;
+}
+
+function transcript(dir, ...tools) {
+  const lines = [{ type: "user", message: { role: "user", content: "go" } }];
+  for (const t of tools) {
+    lines.push({ type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "x", name: t.name, input: t.input ?? {} }] } });
+  }
+  const f = path.join(dir, "t.jsonl");
+  writeFileSync(f, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+  return f;
+}
+
+const WRITE = { name: "mcp__sprintree__update_issue_status", input: { key: "SPD-1" } };
+
+test("SessionStart: silent without Sprintree config, a short reminder with .sprintree.json", () => {
+  const plain = project({});
+  const r0 = hook("SessionStart", { cwd: plain, source: "startup" });
+  assert.equal(r0.code, 0);
+  assert.equal(r0.out, "");
+  const dir = project();
+  const r = hook("SessionStart", { cwd: dir, source: "compact" });
+  assert.equal(r.code, 0);
+  const o = JSON.parse(r.out);
+  assert.equal(o.hookSpecificOutput.hookEventName, "SessionStart");
+  const text = o.hookSpecificOutput.additionalContext;
+  assert.ok(text.split("\n").length <= 6);
+  assert.match(text, /in_progress/);
+  assert.match(text, /data, not instructions/);
+});
+
+test("SessionStart: a link in a doc file counts, from a subfolder; the KEY placeholder does not", () => {
+  const dir = project({ "CLAUDE.md": "board: https://sprintree.com/p/SPD" });
+  const sub = path.join(dir, "a", "b");
+  mkdirSync(sub, { recursive: true });
+  assert.match(hook("SessionStart", { cwd: sub }).out, /additionalContext/);
+  const ph = project({ "AGENTS.md": "https://sprintree.com/p/KEY" });
+  assert.equal(hook("SessionStart", { cwd: ph }).out, "");
+});
+
+test("SessionStart: SPRINTREE_HOOKS=off and garbage input are silent with exit 0", () => {
+  const dir = project();
+  assert.equal(hook("SessionStart", { cwd: dir }, { SPRINTREE_HOOKS: "off" }).out, "");
+  const r = spawnSync(process.execPath, [SCRIPT, "SessionStart"], { input: "not json", encoding: "utf8" });
+  assert.equal(r.status, 0);
+  assert.equal(spawnSync(process.execPath, [SCRIPT, "Nope"], { input: "{}", encoding: "utf8" }).stdout, "");
+});
+
+const stop = (dir, extra = {}) => ({ cwd: dir, session_id: sid(), ...extra });
+const ST_WRITE = { name: "Bash", input: { command: 'node skills/sprintree/scripts/st.mjs call add_comment \'{"key":"SPD-1"}\'' } };
+const READ = { name: "mcp__sprintree__get_work_context" };
+const EDIT = { name: "Edit", input: { file_path: "x" } };
+
+function append(file, ...tools) {
+  const lines = tools.map((t) => JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "x", name: t.name, input: t.input ?? {} }] } }));
+  appendFileSync(file, lines.join("\n") + "\n");
+}
+
+// <dir of transcript>/<session_id>/subagents/agent-*.jsonl, the layout Claude Code writes
+function subagent(dir, session, ...tools) {
+  const d = path.join(dir, session, "subagents");
+  mkdirSync(d, { recursive: true });
+  const f = path.join(d, "agent-a1.jsonl");
+  writeFileSync(f, "");
+  append(f, ...tools);
+  return f;
+}
+
+test("SessionStart: a folder without .git counts only for itself, never from a parent above $HOME or the root (st.mjs's repoRoot)", () => {
+  const home = tmp();
+  writeFileSync(path.join(home, "CLAUDE.md"), "global: https://sprintree.com/p/SPD");
+  const sub = path.join(home, "notes", "deep");
+  mkdirSync(sub, { recursive: true });
+  const env = { HOME: home, USERPROFILE: home };
+  assert.equal(hook("SessionStart", { cwd: sub }, env).out, "", "no .git: the parent's link is not picked up");
+  assert.match(hook("SessionStart", { cwd: home }, env).out, /additionalContext/, "the folder itself still counts");
+  mkdirSync(path.join(home, ".git"));
+  assert.match(hook("SessionStart", { cwd: sub }, env).out, /additionalContext/, "with .git at $HOME the walk reaches it");
+  const long = project({ "CLAUDE.md": "https://sprintree.com/p/ABCDEFGHIJK" });
+  assert.equal(hook("SessionStart", { cwd: long }).out, "", "a key longer than 10 characters is not a project key (KEY_RE)");
+});
+
+test("Stop: the claude.ai connector's tool names count in any letter case", () => {
+  const dir = project();
+  const input = stop(dir, { transcript_path: transcript(dir, { name: "mcp__claude_ai_Sprintree__add_comment", input: { key: "SPD-1" } }) });
+  assert.equal(JSON.parse(hook("Stop", input).out).decision, "block");
+});
+
+test("Stop: a marker folder that is a symlink, or open to others, is skipped quietly: no marker, no nudge, exit 0", { skip: process.platform === "win32" }, () => {
+  const dir = project();
+  const base = tmp();
+  const target = path.join(base, "elsewhere");
+  mkdirSync(target);
+  symlinkSync(target, path.join(base, "sprintree-agent-hooks"));
+  const input = stop(dir, { transcript_path: transcript(dir, WRITE) });
+  const r = hook("Stop", input, { TMPDIR: base });
+  assert.equal(r.code, 0);
+  assert.equal(r.out, "");
+  assert.deepEqual(readdirSync(target), []);
+  const open = tmp();
+  mkdirSync(path.join(open, "sprintree-agent-hooks"), { mode: 0o777 });
+  chmodSync(path.join(open, "sprintree-agent-hooks"), 0o777);
+  const r2 = hook("Stop", input, { TMPDIR: open });
+  assert.equal(r2.code, 0);
+  assert.equal(r2.out, "");
+  assert.deepEqual(readdirSync(path.join(open, "sprintree-agent-hooks")), []);
+  const ok = tmp(); // a fresh folder: created 0700, nudges
+  assert.equal(JSON.parse(hook("Stop", input, { TMPDIR: ok }).out).decision, "block");
+});
+
+test("Stop: a board write blocks, with a reason that asks to check the cards and leaks no transcript text", () => {
+  const dir = project();
+  const input = stop(dir, { transcript_path: transcript(dir, WRITE) });
+  const first = hook("Stop", input);
+  assert.equal(first.code, 0);
+  const o = JSON.parse(first.out);
+  assert.equal(o.decision, "block");
+  assert.match(o.reason, /real status/);
+  assert.match(o.reason, /result comment/);
+  assert.match(o.reason, /did not ask about any card, do nothing on the board/);
+  assert.ok(!o.reason.includes("SPD-1"));
+});
+
+test("Stop: a second stop with nothing new is silent; new work after a nudge nudges again", () => {
+  const dir = project();
+  const t = transcript(dir, WRITE);
+  const input = stop(dir, { transcript_path: t });
+  assert.equal(JSON.parse(hook("Stop", input).out).decision, "block");
+  assert.equal(hook("Stop", input).out, "");
+  assert.equal(hook("Stop", input).out, "");
+  append(t, EDIT, { name: "mcp__sprintree__list_projects" }); // no qualifying event: still silent
+  assert.equal(hook("Stop", input).out, "");
+  append(t, ST_WRITE);
+  assert.equal(JSON.parse(hook("Stop", input).out).decision, "block");
+  assert.equal(hook("Stop", input).out, "");
+});
+
+test("Stop: a card read followed by a code change blocks; the order matters and a read alone or an edit alone does not", () => {
+  const dir = project();
+  const rw = hook("Stop", stop(dir, { transcript_path: transcript(dir, READ, EDIT) }));
+  assert.equal(JSON.parse(rw.out).decision, "block");
+  for (const name of ["get_issue_details", "get_issue_history", "list_issue_commits", "list_issue_files"]) {
+    assert.equal(JSON.parse(hook("Stop", stop(dir, { transcript_path: transcript(dir, { name: `mcp__sprintree__${name}` }, { name: "Write", input: {} }) })).out).decision, "block", name);
+  }
+  assert.equal(JSON.parse(hook("Stop", stop(dir, { transcript_path: transcript(dir, { name: "Bash", input: { command: "node st.mjs call get_issue_details '{}'" } }, { name: "MultiEdit", input: {} }) })).out).decision, "block");
+  assert.equal(hook("Stop", stop(dir, { transcript_path: transcript(dir, EDIT, READ) })).out, "", "the edit came before the read");
+  assert.equal(hook("Stop", stop(dir, { transcript_path: transcript(dir, READ) })).out, "");
+  assert.equal(hook("Stop", stop(dir, { transcript_path: transcript(dir, EDIT, { name: "Write", input: {} }) })).out, "", "code changed, Sprintree never touched");
+  const lists = transcript(dir, { name: "mcp__sprintree__list_projects" }, { name: "mcp__sprintree__search_issues" }, { name: "mcp__sprintree__list_statuses" }, EDIT);
+  assert.equal(hook("Stop", stop(dir, { transcript_path: lists })).out, "", "lists and searches are not card reads");
+});
+
+test("Stop: a read, then a code change after a nudge counts only when both are new", () => {
+  const dir = project();
+  const t = transcript(dir, READ);
+  const input = stop(dir, { transcript_path: t });
+  assert.equal(hook("Stop", input).out, "");
+  append(t, EDIT);
+  assert.equal(JSON.parse(hook("Stop", input).out).decision, "block");
+  append(t, EDIT);
+  assert.equal(hook("Stop", input).out, "", "the read was before the last nudge");
+});
+
+test("Stop: a subagent's board write nudges the main session; its card read plus a main edit does too", () => {
+  const dir = project();
+  const session = sid();
+  const t = transcript(dir, EDIT);
+  subagent(dir, session, ST_WRITE);
+  assert.equal(JSON.parse(hook("Stop", { cwd: dir, session_id: session, transcript_path: t }).out).decision, "block");
+  const dir2 = project();
+  const s2 = sid();
+  const t2 = transcript(dir2, EDIT);
+  subagent(dir2, s2, EDIT);
+  assert.equal(hook("Stop", { cwd: dir2, session_id: s2, transcript_path: t2 }).out, "", "edits alone, no Sprintree");
+  subagent(dir2, s2, READ);
+  assert.equal(JSON.parse(hook("Stop", { cwd: dir2, session_id: s2, transcript_path: t2 }).out).decision, "block");
+});
+
+test("Stop: a symlinked subagent file is not read", () => {
+  const dir = project();
+  const session = sid();
+  const t = transcript(dir, EDIT);
+  const other = path.join(dir, "other.jsonl");
+  writeFileSync(other, "");
+  append(other, ST_WRITE);
+  mkdirSync(path.join(dir, session, "subagents"), { recursive: true });
+  symlinkSync(other, path.join(dir, session, "subagents", "agent-link.jsonl"));
+  assert.equal(hook("Stop", { cwd: dir, session_id: session, transcript_path: t }).out, "");
+});
+
+test("Stop: a st.mjs call counts only after a node invocation; grep and cat of the text do not", () => {
+  const dir = project();
+  for (const command of ["grep 'st.mjs call add_comment' README.md", "grep -n \"st.mjs call update_issue_status\" README.md", "cat skills/sprintree/scripts/st.mjs call add_comment"]) {
+    assert.equal(hook("Stop", stop(dir, { transcript_path: transcript(dir, { name: "Bash", input: { command } }) })).out, "", command);
+  }
+  for (const command of ['node "${CLAUDE_PLUGIN_ROOT}/skills/sprintree/scripts/st.mjs" call add_comment @c.json', "cd x && node --no-warnings ./st.mjs call update_issue_status '{}'"]) {
+    assert.equal(JSON.parse(hook("Stop", stop(dir, { transcript_path: transcript(dir, { name: "Bash", input: { command } }) })).out).decision, "block", command);
+  }
+});
+
+test("Stop: not when stop_hook_active, not with SPRINTREE_HOOKS=off", () => {
+  const dir = project();
+  const t = transcript(dir, WRITE);
+  assert.equal(hook("Stop", { cwd: dir, session_id: sid(), transcript_path: t, stop_hook_active: true }).out, "");
+  assert.equal(hook("Stop", { cwd: dir, session_id: sid(), transcript_path: t }, { SPRINTREE_HOOKS: "off" }).out, "");
+  // the opt-out and stop_hook_active must not have used up the session's one nudge
+  const s = sid();
+  assert.equal(hook("Stop", { cwd: dir, session_id: s, transcript_path: t, stop_hook_active: true }).out, "");
+  assert.equal(JSON.parse(hook("Stop", { cwd: dir, session_id: s, transcript_path: t }).out).decision, "block");
+});
+
+test("Stop: the answer to a nudge (a board write under stop_hook_active) is not new work on the next turn", () => {
+  const dir = project();
+  const t = transcript(dir, READ, EDIT);
+  const input = stop(dir, { transcript_path: t });
+  assert.equal(JSON.parse(hook("Stop", input).out).decision, "block", "turn 1");
+  append(t, { name: "mcp__sprintree__add_comment", input: { key: "SPD-1" } });
+  assert.equal(hook("Stop", { ...input, stop_hook_active: true }).out, "", "the nudge answer");
+  append(t, { name: "mcp__sprintree__list_projects" }); // turn 2: an unrelated question
+  assert.equal(hook("Stop", input).out, "", "turn 2");
+  assert.equal(hook("Stop", input).out, "", "turn 3");
+});
+
+test("Stop: a Bash command that writes files after a card read counts as a code change; read-only commands do not", () => {
+  const bash = (command) => ({ name: "Bash", input: { command } });
+  const writes = [
+    "sed -i 's/a/b/' src/x.js", "sed -i.bak -e 's/a/b/' x", "perl -pi -e 's/a/b/' x", "echo hi > out.txt", "cat <<EOF >> notes.md\nx\nEOF",
+    "cat > f.js <<'EOF'\nx\nEOF", "npm test 2>&1 | tee build.log", "git apply fix.patch", "git commit -m x", "git -C . am p.mbox",
+    "perl -i.bak -pe 's/a/b/' f", "perl -pi -e s/a/b/ f", "perl -0pi -e s/a/b/ f", "perl -0777pi -e s/a/b/ f", "perl -0777 -pi -e s/a/b/ f",
+    "perl -wpi -e s/a/b/ f", "perl -pi -Mstrict f", "cd x && sed -i s/a/b/ f", "ls >/dev/null; echo hi > out.txt",
+  ];
+  for (const command of writes) {
+    const dir = project();
+    assert.equal(JSON.parse(hook("Stop", stop(dir, { transcript_path: transcript(dir, READ, bash(command)) })).out).decision, "block", command);
+  }
+  const readOnly = [
+    "npm test", "git status", "grep -rn foo src", "cat src/x.js", "sed -n '1,5p' x", "ls > /dev/null", "npm test 2>&1", "make 2>/dev/null",
+    "echo hi >&2", "git diff | head", "node -e \"x=>x\"", "ls | tee /dev/null", "ls >/dev/null; echo done", "make >/dev/null&&echo ok",
+    "(ls >/dev/null)", "ls | tee /dev/null; echo x", "perl -Mstrict -e 1", "perl -MList::Util=sum -le 'print 1'", "perl -I lib -e 1",
+    "perl -wMstrict -e 1", "perl -wIlib -e 1",
+  ];
+  for (const command of readOnly) {
+    const dir = project();
+    assert.equal(hook("Stop", stop(dir, { transcript_path: transcript(dir, READ, bash(command)) })).out, "", command);
+  }
+  const dir = project();
+  assert.equal(hook("Stop", stop(dir, { transcript_path: transcript(dir, bash("sed -i s/a/b/ x")) })).out, "", "no card read before it");
+});
+
+test("bashWrites: an 80k crafted sed or perl flag token classifies in under 200 ms", () => {
+  const crafted = `-${"i".repeat(80000)}!`;
+  for (const word of ["sed", "perl"]) {
+    const t0 = performance.now();
+    assert.equal(bashWrites(`${word} ${crafted} x`), false);
+    const ms = performance.now() - t0;
+    console.log(`bashWrites ${word} 80k token: ${ms.toFixed(1)} ms`);
+    assert.ok(ms < 200, `${word}: ${ms} ms`);
+  }
+});
+
+test("Stop: a card read that falls out of the scanned tail before the edit still counts", () => {
+  const dir = project();
+  const big = path.join(dir, "big.jsonl");
+  const filler = JSON.stringify({ type: "user", message: { content: "x".repeat(1000) } }) + "\n";
+  writeFileSync(big, transcript(dir, READ) && readFileSync(transcript(dir, READ), "utf8"));
+  const input = stop(dir, { transcript_path: big });
+  assert.equal(hook("Stop", input).out, "", "a read alone");
+  appendFileSync(big, filler.repeat(3000)); // the read is now >2 MiB from the end
+  append(big, EDIT);
+  assert.equal(JSON.parse(hook("Stop", input).out).decision, "block");
+  append(big, EDIT);
+  assert.equal(hook("Stop", input).out, "", "the read was used up by the nudge");
+});
+
+test("Stop: not for a read-only session, a missing transcript, a non-Sprintree project or no session id", () => {
+  const dir = project();
+  const ro = transcript(dir, { name: "mcp__sprintree__get_issue_details" }, { name: "mcp__sprintree__list_projects" });
+  assert.equal(hook("Stop", { cwd: dir, session_id: sid(), transcript_path: ro }).out, "");
+  assert.equal(hook("Stop", { cwd: dir, session_id: sid(), transcript_path: path.join(dir, "missing.jsonl") }).out, "");
+  assert.equal(hook("Stop", { cwd: dir, session_id: sid() }).out, "");
+  const t = transcript(dir, WRITE);
+  assert.equal(hook("Stop", { cwd: dir, transcript_path: t }).out, "");
+  const plain = project({});
+  assert.equal(hook("Stop", { cwd: plain, session_id: sid(), transcript_path: transcript(plain, WRITE) }).out, "");
+});
+
+test("Stop: a hostile session_id cannot leave the temp folder, and a huge transcript is read only at its tail", () => {
+  const dir = project();
+  const t = transcript(dir, WRITE);
+  const r = hook("Stop", { cwd: dir, session_id: "../../etc/x" + sid(), transcript_path: t });
+  assert.equal(r.code, 0);
+  const big = path.join(dir, "big.jsonl");
+  const filler = JSON.stringify({ type: "user", message: { content: "x".repeat(1000) } }) + "\n";
+  writeFileSync(big, WRITE_LINE() + filler.repeat(3000)); // the write is >2 MiB from the end
+  assert.equal(hook("Stop", { cwd: dir, session_id: sid(), transcript_path: big }).out, "");
+});
+
+function WRITE_LINE() {
+  return JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: WRITE.name, input: {} }] } }) + "\n";
+}
+
+test("hooks.json: the card-reminder hooks are node commands that end quietly without Node (2>/dev/null || true, like the agent-runs hooks), with small timeouts", () => {
+  const doc = JSON.parse(readFileSync(path.join(ROOT, "claude-hooks", "hooks.json"), "utf8"));
+  const found = [];
+  for (const [event, groups] of Object.entries(doc.hooks)) {
+    for (const g of groups) {
+      for (const h of g.hooks) {
+        if (!h.command.includes("discipline.mjs")) continue;
+        found.push(event);
+        assert.match(h.command, new RegExp(`^node "\\$\\{CLAUDE_PLUGIN_ROOT\\}/skills/sprintree/scripts/discipline\\.mjs" ${event} 2>/dev/null \\|\\| true$`));
+        assert.ok(!/[|&;<>`$(\[]/.test(h.command.replace('${CLAUDE_PLUGIN_ROOT}', "").replace(" 2>/dev/null || true", "")), h.command);
+        assert.ok(h.timeout <= 5);
+        assert.equal(g.matcher, undefined, "all SessionStart sources");
+      }
+    }
+  }
+  assert.deepEqual(found.sort(), ["SessionStart", "Stop"]);
+});
+
+test("Stop: a card read with no nudge leaves a marker; an active stop does not swallow the edit, the next normal turn nudges", () => {
+  const dir = project();
+  const t = transcript(dir, READ);
+  const input = stop(dir, { transcript_path: t });
+  assert.equal(hook("Stop", input).out, "", "turn 1: card read, no code yet, no nudge");
+  append(t, EDIT);
+  // turn 2: another plugin's blocking Stop hook forced a continuation; the hook stays silent and must not advance past the edit
+  assert.equal(hook("Stop", { ...input, stop_hook_active: true }).out, "", "turn 2 (active) is silent");
+  assert.equal(JSON.parse(hook("Stop", input).out).decision, "block", "turn 3 nudges");
+});
+
+test("bashWrites: a 320 KB command of repeated sed words classifies in linear time", () => {
+  const cmd = "sed ".repeat(80 * 1024);
+  const t0 = performance.now();
+  assert.equal(bashWrites(cmd), false);
+  assert.equal(bashWrites(`${cmd} -i x`), true);
+  const ms = performance.now() - t0;
+  console.log(`bashWrites 320KB x2: ${ms.toFixed(1)} ms`);
+  assert.ok(ms < 500, `${ms} ms`);
+});

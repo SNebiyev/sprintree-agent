@@ -218,11 +218,12 @@ test("hooks.json: every hook first tests the token in the shell and can never fa
   const doc = JSON.parse(readFileSync(path.join(ROOT, "claude-hooks", "hooks.json"), "utf8"));
   const plugin = JSON.parse(readFileSync(path.join(ROOT, ".claude-plugin", "plugin.json"), "utf8"));
   assert.equal(plugin.hooks, "./claude-hooks/hooks.json");
-  assert.deepEqual(Object.keys(doc.hooks).sort(), ["PostToolUse", "SessionStart", "SubagentStart", "SubagentStop", "UserPromptSubmit"]);
+  assert.deepEqual(Object.keys(doc.hooks).sort(), ["PostToolUse", "SessionStart", "Stop", "SubagentStart", "SubagentStop", "UserPromptSubmit"]);
   for (const [event, groups] of Object.entries(doc.hooks)) {
     for (const g of groups) {
       for (const h of g.hooks) {
         assert.equal(h.type, "command");
+        if (h.command.includes("discipline.mjs")) continue; // the card reminders: test/hooks.test.mjs
         assert.match(h.command, /^\[ -z "\$SPRINTREE_RUNS_TOKEN" \] \|\| node "\$\{CLAUDE_PLUGIN_ROOT\}\/skills\/sprintree\/scripts\/runs\.mjs" hook 2>\/dev\/null \|\| true$/, event);
       }
     }

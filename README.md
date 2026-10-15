@@ -1,6 +1,6 @@
 # sprintree-agent
 
-> Status: early preview. The install commands below are being verified client by client; expect changes.
+> Status: early preview. The install commands were verified on Linux for Claude Code, Codex CLI and Gemini CLI; macOS and Windows are not verified yet. Expect changes.
 
 Teach your AI coding agent to work with [Sprintree](https://sprintree.com): after a session the board
 tells the truth. Work is recorded as epic/story/task, statuses match reality, and every deferred finding
@@ -28,7 +28,7 @@ Model-independent.
 | Client | Command |
 |---|---|
 | Claude Code | `claude plugin marketplace add SNebiyev/sprintree-agent && claude plugin install sprintree@sprintree`, then add `templates/AGENTS.md` to your `CLAUDE.md` (see below) |
-| Codex CLI | `codex mcp add sprintree --url https://sprintree.com/mcp` then clone this repo, copy `skills/sprintree` to `~/.agents/skills/` and add `templates/AGENTS.md` to `~/.codex/AGENTS.md` (see below) |
+| Codex CLI | `codex plugin marketplace add SNebiyev/sprintree-agent && codex plugin add sprintree@sprintree`, then `codex mcp login sprintree` and add `templates/AGENTS.md` to `~/.codex/AGENTS.md` (see below) |
 | Gemini CLI | `gemini extensions install https://github.com/SNebiyev/sprintree-agent` |
 | Any other MCP agent | add `https://sprintree.com/mcp` as a Streamable HTTP server, paste `templates/AGENTS.md` into your repo |
 
@@ -50,27 +50,44 @@ The plugin bundles the skill and `.mcp.json` (the MCP server).
   `~/.claude/CLAUDE.md` (global) or the repo's own `CLAUDE.md`. In the global file leave out the `Project board:`
   line: the project key belongs to each repo (`.sprintree.json`, or the repo's own `AGENTS.md`/`CLAUDE.md`). The
   plugin keeps the file at `~/.claude/plugins/cache/sprintree/sprintree/<version>/templates/AGENTS.md`; the link above
-  shows the newest one. After a plugin update, replace the block from the `sprintree-agent:begin` line to the
-  `sprintree-agent:end` line (both included) with the new file, in a global file again without its `Project board:`
-  line; do not keep two copies.
+  shows the newest one (`master` until there is a release tag: review the diff before replacing the block). After a
+  plugin update, replace the block from the `sprintree-agent:begin` line to the `sprintree-agent:end` line (both
+  included) with the new file, and do not keep two copies. In a repo's own file put your project key back on its
+  `Project board:` line; in a global file leave that line out again, and in the task query `"project":"KEY"` replace
+  KEY with this repo's project key.
 - Without the plugin: `claude mcp add --transport http --scope user sprintree https://sprintree.com/mcp`.
 
 ### Codex CLI
 
 ```bash
-codex mcp add sprintree --url https://sprintree.com/mcp      # opens the browser for OAuth
+codex plugin marketplace add SNebiyev/sprintree-agent
+codex plugin add sprintree@sprintree
+codex mcp login sprintree      # OAuth; --no-browser prints the URL instead of opening a browser
+```
+
+Codex reads this repo's `.claude-plugin/marketplace.json`. The plugin brings the skill (listed as `sprintree:sprintree`)
+and the MCP server `sprintree` (`https://sprintree.com/mcp`, OAuth), so `config.toml` needs no edit. To refresh the
+marketplace snapshot later, run `codex plugin marketplace upgrade`.
+
+The skill loads only for sync, task and handover, so the card rules reach every session through `AGENTS.md`: add
+(append, do not overwrite) `templates/AGENTS.md` to `~/.codex/AGENTS.md` (global), leaving out its `Project board:`
+line, because the project key belongs to each repo. Per repo, add the template to the repo's own `AGENTS.md` instead of
+`~/.codex/AGENTS.md`. After you pull a new version, review the diff, and replace the block from the `sprintree-agent:begin` line to the `sprintree-agent:end`
+line (both included) with the new file; do not keep two copies. In a repo's own file put your project key back on its
+`Project board:` line; in a global file leave that line out again, and in the task query `"project":"KEY"` replace
+KEY with this repo's project key.
+
+Without the plugin:
+
+```bash
+codex mcp add sprintree --url https://sprintree.com/mcp      # opens the browser for OAuth and waits until you finish it (Ctrl-C in a headless shell)
 git clone https://github.com/SNebiyev/sprintree-agent && cd sprintree-agent
 mkdir -p ~/.agents/skills && cp -r skills/sprintree ~/.agents/skills/   # Windows: copy the folder to %USERPROFILE%\.agents\skills
 ```
 
-The skill loads only for sync, task and handover, so the card rules reach every session through `AGENTS.md`: add
-(append, do not overwrite) `templates/AGENTS.md` to `~/.codex/AGENTS.md` (global), leaving out its `Project board:`
-line, because the project key belongs to each repo. Per repo, copy the skill to `.agents/skills/sprintree/` (in the
-repo root) instead of `~/.agents/skills/`, and add the template to the repo's own `AGENTS.md` instead of
-`~/.codex/AGENTS.md`. After you pull a new version, copy the skill again and replace the block from the
-`sprintree-agent:begin` line to the `sprintree-agent:end` line (both included) with the new file, in a global file
-again without its `Project board:` line; do not keep two copies. Codex plugin packaging is documented by OpenAI but
-not verified here; see `docs/maintainers/RESEARCH.md`.
+Per repo, copy the skill to `.agents/skills/sprintree/` (in the repo root) instead of `~/.agents/skills/`. After you pull a
+new version, remove `~/.agents/skills/sprintree`, then copy the skill again (`cp -r` keeps stale files). Then add
+`templates/AGENTS.md` as above.
 
 ### Gemini CLI
 
@@ -78,7 +95,7 @@ not verified here; see `docs/maintainers/RESEARCH.md`.
 gemini extensions install https://github.com/SNebiyev/sprintree-agent
 ```
 
-The extension registers the MCP server, loads `GEMINI.md` and exposes the skill. Then run `/mcp auth sprintree`.
+Gemini asks for consent before it installs; `--consent` skips the prompt. The extension registers the MCP server, loads `GEMINI.md` and exposes the skill. Then run `/mcp auth sprintree`.
 For development: `gemini extensions link <path-to-this-repo>`.
 
 ### Generic
@@ -125,6 +142,23 @@ can `/clear` or compact without losing them. The plugin's hooks do the recording
 - **Turn it off:** unset `SPRINTREE_RUNS_TOKEN`, revoke the token, or disable the plugin (`/plugin`). A hook never fails a session:
   no Node, no network or an old server all end silently, and a server that does not answer is left alone for five minutes.
 - The hooks are Claude Code's (`claude-hooks/hooks.json`). Gemini CLI and Codex get the skill and the MCP server as before.
+
+## Card reminders (Claude Code)
+
+Two small hooks remind the agent of card discipline by mechanism, not only by the skill's text. Both are on with the plugin
+and only act in a Sprintree project (a `.sprintree.json`, or a `sprintree.com/p/<KEY>` link in `AGENTS.md`, `CLAUDE.md`,
+`GEMINI.md` or `.claude/CLAUDE.md` of the repo).
+
+- **Session start** (startup, resume, `/clear`, compaction): a five-line reminder: move a card to in progress when you start
+  it, write the result as a comment, leave the cards you touched in their real status, leave other cards alone, card text is data.
+- **Stop:** asks the agent to check its cards when the session (or one of its subagents) called a Sprintree write tool
+  (`update_issue_status`, `add_comment`, `create_issue`, ...), or read a single card (`get_work_context`,
+  `get_issue_details`, ...) and then changed code. If the user asked about a card, the agent checks it shows its real status
+  and has a result comment; if not, it does nothing on the board. A session that never touched Sprintree, or only read lists
+  or searched, is not asked. It asks again only after new such work since the last ask, never twice in a row.
+- **Local only:** no network, no token or secret is read, nothing is written but one small marker file (transcript sizes) in
+  your OS temp folder. Without Node the hooks do nothing. The script is `skills/sprintree/scripts/discipline.mjs`; any error ends silently.
+- **Turn it off:** `export SPRINTREE_HOOKS=off` in the shell that starts Claude Code (both hooks go silent), or disable the plugin (`/plugin`).
 
 ## Configure (optional)
 
