@@ -175,7 +175,44 @@ test("SessionEnd without a run asks nothing; a failing or refused close is silen
     assert.equal(r.code, 0);
     assert.equal(r.out, "");
     assert.equal(r.err, "");
+    assert.equal(stateOf(r).state.run, RUN, "kept for the idle close");
   }
+});
+
+test("SessionEnd of a session without a run forgets its mark, so a later exit of the run's session closes the run", async () => {
+  const t = 10_000_000;
+  const dir = tmpDir("runs-");
+  await hook({ hook_event_name: "UserPromptSubmit", session_id: "A" }, { fetch: server().fetch, dir, now: t });
+  const none = server();
+  const a = await hook({ hook_event_name: "SessionEnd", reason: "other", session_id: "A" }, { fetch: none.fetch, dir, now: t + 1000 });
+  assert.equal(none.fetch.calls.length, 0, "no request");
+  assert.ok(!("A" in (stateOf(a).state.sessions ?? {})), "A is forgotten");
+  await hook({ hook_event_name: "SubagentStart", agent_id: "a1", session_id: "B" }, { fetch: server().fetch, dir, now: t + 2000 });
+  const s = server();
+  const b = await hook({ hook_event_name: "SessionEnd", reason: "other", session_id: "B" }, { fetch: s.fetch, dir, now: t + 3000 });
+  assert.deepEqual(s.asked, [{ name: "close_run", args: { run: RUN } }]);
+  assert.equal(stateOf(b).state.run, null);
+});
+
+test("/clear then exit: the cleared id is forgotten, the new id's exit closes the run", async () => {
+  const t = 10_000_000;
+  const dir = tmpDir("runs-");
+  await hook({ hook_event_name: "SubagentStart", agent_id: "a1", session_id: "sid1" }, { fetch: server().fetch, dir, now: t });
+  await hook({ hook_event_name: "SessionEnd", reason: "clear", session_id: "sid1" }, { fetch: server().fetch, dir, now: t + 1000 });
+  await hook({ hook_event_name: "SessionStart", source: "clear", session_id: "sid2" }, { fetch: server({ unchanged: true }).fetch, dir, now: t + 2000 });
+  const s = server();
+  const r = await hook({ hook_event_name: "SessionEnd", reason: "other", session_id: "sid2" }, { fetch: s.fetch, dir, now: t + 3000 });
+  assert.deepEqual(s.asked, [{ name: "close_run", args: { run: RUN } }]);
+  assert.equal(stateOf(r).state.run, null);
+});
+
+test("a mark older than a day is pruned on the next write", async () => {
+  const t = 100_000_000;
+  const dir = tmpDir("runs-");
+  const first = await hook({ hook_event_name: "UserPromptSubmit", session_id: "old" }, { fetch: server().fetch, dir, now: t });
+  assert.ok("old" in stateOf(first).state.sessions);
+  const r = await hook({ hook_event_name: "UserPromptSubmit", session_id: "new" }, { fetch: server().fetch, dir, now: t + 25 * 3_600_000 });
+  assert.deepEqual(Object.keys(stateOf(r).state.sessions), ["new"], "the 25h-old entry is gone");
 });
 
 test("SessionStart says nothing without a run, and forgets a closed one", async () => {

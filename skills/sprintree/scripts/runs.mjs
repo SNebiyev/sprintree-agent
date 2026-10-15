@@ -297,7 +297,18 @@ async function onHook(input, env, deps) {
   } else if (event === "SubagentStart" || event === "SubagentStop") {
     if (!agent) return "";
   } else if (event === "SessionEnd") {
-    if (!state.run) return "";
+    if (!state.run) {
+      // no run to close, but the ending session must not stay marked or a run another session opens later would wait for it
+      if (sid && sid in objectOf(state.sessions)) {
+        delete state.sessions[sid];
+        try {
+          writeState(file, state, from);
+        } catch {
+          // a read-only home: nothing to remember
+        }
+      }
+      return "";
+    }
     if (sid) delete objectOf(state.sessions)[sid];
     // /clear and an in-session /resume end a session that goes on under a new id (its SessionStart marks that id): the run
     // survives, but the ending id must not stay marked or a later exit would think this session is still alive.

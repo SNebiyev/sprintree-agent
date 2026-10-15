@@ -114,7 +114,6 @@ const installSmokePinProblems = (wf) => {
   const pinned = new Set();
   for (const line of installLines) {
     for (const tok of line.split(/\s+/).filter((t) => /^@?[a-z0-9][\w.-]*(\/[\w.-]+)?(@.*)?$/i.test(t) && !/^(npm|install|i|add|run)$/.test(t) && !t.startsWith("-"))) {
-      if (/^(npm|install|i|add)$/.test(tok)) continue;
       if (!/^@?[^@\s]+@\d+\.\d+\.\d+$/.test(tok)) problems.push(`not an exact version: ${tok}`);
       else pinned.add(tok.replace(/@\d+\.\d+\.\d+$/, ""));
     }
