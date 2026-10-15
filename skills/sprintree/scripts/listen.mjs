@@ -19,7 +19,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { isMainModule, resolveConfig } from "./st.mjs";
-import { baseUrl, readToken, safeLine, secondMs } from "./stream-common.mjs";
+import { baseUrl, errorCode, readToken, safeLine, secondMs } from "./stream-common.mjs";
 
 const KEY_RE = /^[A-Z][A-Z0-9]{0,9}$/;
 const FIELD_RE = /^[A-Za-z0-9_.:-]{1,64}$/;
@@ -72,7 +72,7 @@ export function projectOf(cwd, env) {
   } catch {
     // an unreadable or invalid config: fall back to the environment
   }
-  if (!key) key = (env.SPRINTREE_PROJECT || "").trim();
+  if (!key) key = (env.SPRINTREE_PROJECT || "").trim().toUpperCase();
   return typeof key === "string" && KEY_RE.test(key) ? key : null;
 }
 
@@ -87,6 +87,13 @@ export function dedupe(cap = 1000) {
   };
 }
 
+/** " · @actor" for a valid actor, "" when the server does not know it (empty or missing; never an invented name), null for a bad one. */
+const by = (actor) => {
+  if (actor === "" || actor === undefined || actor === null) return "";
+  const a = field(actor);
+  return a ? ` · @${a}` : null;
+};
+
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
 /** The line for one `sprintree` frame (already parsed JSON), or null: unknown type, or a required field that is not valid. */
@@ -96,15 +103,19 @@ export function formatEvent(d) {
   let s = null;
   switch (d.type) {
     case "status": {
-      const [issue, from, to, actor, ev] = [d.issue, d.from, d.to, d.actor, d.ev].map(field);
-      if ([issue, from, to, actor, ev].includes(null)) return null;
-      s = `${issue} · status ${from}→${to} · @${actor} · ev=${ev}`;
+      const [issue, from, to, ev] = [d.issue, d.from, d.to, d.ev].map(field);
+      if ([issue, from, to, ev].includes(null)) return null;
+      const who = by(d.actor);
+      if (who === null) return null;
+      s = `${issue} · status ${from}→${to}${who} · ev=${ev}`;
       break;
     }
     case "notification": {
-      const [kind, issue, actor, ev] = [d.kind, d.issue, d.actor, d.ev].map(field);
-      if ([kind, issue, actor, ev].includes(null)) return null;
-      s = `${issue} · ${kind} · @${actor} · ev=${ev}`;
+      const [kind, issue, ev] = [d.kind, d.issue, d.ev].map(field);
+      if ([kind, issue, ev].includes(null)) return null;
+      const who = by(d.actor);
+      if (who === null) return null;
+      s = `${issue} · ${kind}${who} · ev=${ev}`;
       break;
     }
     case "command": {
@@ -123,7 +134,7 @@ export function formatEvent(d) {
       const [m, st, c] = [d.mentions ?? 0, d.status ?? 0, d.commands ?? 0].map(count);
       if ([m, st, c].includes(null)) return null;
       const parts = [];
-      if (m) parts.push(plural(m, "mention", "mentions"));
+      if (m) parts.push(`${plural(m, "notification", "notifications")} (mentions, replies, assignments, reviews)`);
       if (st) parts.push(plural(st, "status change", "status changes"));
       if (c) parts.push(plural(c, "/claude command", "/claude commands"));
       return parts.length ? `while you were away: ${parts.join(", ")}`.slice(0, LINE_MAX) : null;
@@ -243,6 +254,7 @@ export async function main({ env = process.env, cwd = process.cwd(), write = (l)
           if (res.status === 401) return out(`${prefix}: the live-events token was rejected; run /sprintree:connect`);
           if (res.status === 404) return out(`${prefix}: project ${project} not found or not shared with you`);
           if (res.status === 429 && codeOf(body) === "connection_limit") return out(`${prefix}: 10 live connections already open; not connecting`);
+          if (res.status === 409 && codeOf(body) === "session_detached") return out(`${prefix}: this session was detached in Settings; restart Claude Code after 10 minutes to reconnect`);
           if (res.status >= 400 && res.status < 500 && res.status !== 429 && res.status !== 408) return out(`${prefix}: the server answered ${res.status}; not connecting`);
           if (Number.isFinite(ra) && ra > 0) retryAfter = Math.min(ra, RETRY_AFTER_MAX_S) * sec;
           throw new Error("retry");
@@ -335,10 +347,7 @@ async function readSmall(res) {
 
 function codeOf(body) {
   try {
-    const j = JSON.parse(body);
-    if (typeof j?.error?.code === "string") return j.error.code;
-    if (typeof j?.code === "string") return j.code;
-    return typeof j?.error === "string" ? j.error : "";
+    return errorCode(JSON.parse(body));
   } catch {
     return "";
   }

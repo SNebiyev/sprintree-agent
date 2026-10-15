@@ -15,7 +15,7 @@ import { chmodSync, existsSync, mkdirSync, renameSync, rmSync, writeFileSync } f
 import { hostname } from "node:os";
 import path from "node:path";
 import { isMainModule, stripControls } from "./st.mjs";
-import { baseUrl, isStreamToken, safeLine, secondMs, tokenFile } from "./stream-common.mjs";
+import { baseUrl, errorCode, isStreamToken, safeLine, secondMs, tokenFile } from "./stream-common.mjs";
 
 const SAFE_URL_RE = /^https?:\/\/[A-Za-z0-9._~:/?#=%@!$'()*+,;-]+$/; // no space, quote, & ^ | < > or backslash: nothing a shell or cmd.exe would act on
 
@@ -54,7 +54,8 @@ export function saveToken(file, token) {
   return replaced;
 }
 
-async function post(origin, route, body) {
+// `soft`: a network error or timeout answers { status: 0 } instead of throwing (the token poll retries it).
+async function post(origin, route, body, soft = false) {
   let res;
   try {
     res = await fetch(`${origin}${route}`, {
@@ -65,6 +66,7 @@ async function post(origin, route, body) {
       signal: AbortSignal.timeout(15_000),
     });
   } catch {
+    if (soft) return { status: 0, json: null };
     throw new Failure("Could not reach the server. Check the connection and run /sprintree:connect again.");
   }
   let json = null;
@@ -107,21 +109,22 @@ export async function main({ env = process.env, log = (l) => process.stdout.writ
 
   let interval = Math.min(Math.max(Number(d.interval) || 5, 1), 60);
   const expiresIn = Math.min(Math.max(Number(d.expires_in) || 600, 1), 3600);
-  const deadline = Date.now() + expiresIn * unit;
+  // 30 s under the 600 s Bash timeout of commands/connect.md, so a last-second approval is still polled
+  const deadline = Date.now() + Math.min(expiresIn, 570) * unit;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, interval * unit));
-    const r = await post(base.origin, "/api/stream/device/token", { device_code: deviceCode });
+    const r = await post(base.origin, "/api/stream/device/token", { device_code: deviceCode }, true);
     if (r.status === 200 && r.json) {
       const token = typeof r.json.token === "string" ? r.json.token.trim() : "";
       if (!isStreamToken(token)) throw new Failure("The server answered without a usable token. Nothing was saved.");
       const file = tokenFile(env);
       const replaced = saveToken(file, token);
       log("Connected. Restart this Claude Code session to start live events (monitors start with the session).");
-      if (replaced) log("This replaced the previous token in that file: revoke the old one in Settings -> API tokens.");
+      if (replaced) log("This replaced the previous token in that file: revoke the old one in Settings > API & MCP > Personal access tokens.");
       return;
     }
     const code = errorCode(r.json);
-    if (r.status === 400 || r.status === 428) {
+    if (r.status === 400) {
       if (code === "authorization_pending") continue;
       if (code === "slow_down") {
         interval += 5;
@@ -132,6 +135,11 @@ export async function main({ env = process.env, log = (l) => process.stdout.writ
     }
     if (r.status === 409 && code === "too_many_tokens") throw new Failure("This account already has 20 stream tokens. Revoke one in Settings, then run /sprintree:connect again.");
     if (r.status === 429) {
+      interval += 5;
+      continue;
+    }
+    // a hiccup (network error, timeout, 5xx, 408) is waited out like a pending approval, until the deadline
+    if (r.status === 0 || r.status === 408 || r.status >= 500) {
       interval += 5;
       continue;
     }
@@ -152,11 +160,4 @@ if (isMainModule(process.argv[1], import.meta.url)) {
       process.exit(1);
     }
   );
-}
-
-// The server answers {"error":{"kind","code","message"}}; the flat {"code"} and {"error":"code"} shapes are a fallback.
-function errorCode(json) {
-  if (typeof json?.error?.code === "string") return json.error.code;
-  if (typeof json?.code === "string") return json.code;
-  return typeof json?.error === "string" ? json.error : "";
 }

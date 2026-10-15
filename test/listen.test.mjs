@@ -112,8 +112,8 @@ test("hello and every event type are printed as one line each, the claim suffix 
       "SPD-12 · mention · @ali · ev=e3",
       "SPD-12 · /claude command · comment=c9 · ev=e4 · claim first",
       "40 cards → done · @samir",
-      "while you were away: 2 mentions, 5 status changes, 1 /claude command",
-      "while you were away: 1 mention",
+      "while you were away: 2 notifications (mentions, replies, assignments, reviews), 5 status changes, 1 /claude command",
+      "while you were away: 1 notification (mentions, replies, assignments, reviews)",
       "1 card → done · @x",
     ]);
     const h = srv.requests[0].headers;
@@ -232,6 +232,8 @@ for (const [name, status, body, line] of [
   ["404", 404, "{}", "sprintree-events: project SPD not found or not shared with you"],
   ["429 connection_limit", 429, '{"error":{"kind":"rate_limited","code":"connection_limit","message":"10 live"}}', "sprintree-events: 10 live connections already open; not connecting"],
   ["429 connection_limit, flat fallback", 429, '{"code":"connection_limit"}', "sprintree-events: 10 live connections already open; not connecting"],
+  ["409 session_detached", 409, '{"error":{"kind":"conflict","code":"session_detached","message":"detached"}}', "sprintree-events: this session was detached in Settings; restart Claude Code after 10 minutes to reconnect"],
+  ["another 409", 409, "{}", "sprintree-events: the server answered 409; not connecting"],
   ["another 4xx", 403, "{}", "sprintree-events: the server answered 403; not connecting"],
 ]) {
   test(`${name}: one line, no retry, exit 0, no token in the output`, async () => {
@@ -263,7 +265,7 @@ test("a 429 without the connection_limit code is retried, honoring Retry-After",
 test("without a token or without a project nothing is printed and the exit code is 0", async () => {
   const srv = await fake((req, res) => sse(res, frame("hello", HELLO)));
   try {
-    for (const extra of [{ SPRINTREE_STREAM_TOKEN: "" }, { SPRINTREE_STREAM_TOKEN: "itn_" + BODY }, { SPRINTREE_PROJECT: "" }, { SPRINTREE_PROJECT: "lower" }]) {
+    for (const extra of [{ SPRINTREE_STREAM_TOKEN: "" }, { SPRINTREE_STREAM_TOKEN: "itn_" + BODY }, { SPRINTREE_PROJECT: "" }, { SPRINTREE_PROJECT: "not a key" }]) {
       const p = start(srv.url, extra, { writeTokenFile: "SPRINTREE_STREAM_TOKEN" in extra });
       assert.equal(await p.exited, 0);
       assert.deepEqual(p.lines, [], JSON.stringify(extra));
@@ -273,6 +275,26 @@ test("without a token or without a project nothing is printed and the exit code 
   } finally {
     await srv.close();
   }
+});
+
+test("SPRINTREE_PROJECT is upper-cased: spd works as SPD", async () => {
+  const srv = await fake((req, res) => sse(res, frame("hello", HELLO)));
+  const p = start(srv.url, { SPRINTREE_PROJECT: " spd " });
+  try {
+    await p.until(1);
+    assert.equal(srv.requests[0].url, "/api/stream?project=SPD");
+  } finally {
+    await p.quit();
+    await srv.close();
+  }
+});
+
+test("an empty actor leaves the actor part out of a status or notification line; issue and ev stay required", () => {
+  assert.equal(formatEvent({ type: "status", issue: "SPD-1", from: "a", to: "b", actor: "", ev: "e1" }), "SPD-1 · status a→b · ev=e1");
+  assert.equal(formatEvent({ type: "notification", kind: "mention", issue: "SPD-1", ev: "e2" }), "SPD-1 · mention · ev=e2");
+  assert.equal(formatEvent({ type: "notification", kind: "mention", issue: "SPD-1", actor: "ali", ev: "e2" }), "SPD-1 · mention · @ali · ev=e2");
+  assert.equal(formatEvent({ type: "notification", kind: "mention", issue: "", actor: "", ev: "e2" }), null);
+  assert.equal(formatEvent({ type: "status", issue: "SPD-1", from: "a", to: "b", actor: "", ev: "" }), null);
 });
 
 test("the token file and the .sprintree.json project are used; the project of the file wins over SPRINTREE_PROJECT", async () => {

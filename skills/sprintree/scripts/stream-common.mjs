@@ -9,7 +9,6 @@ import path from "node:path";
 import { scrub } from "./st.mjs";
 
 export const DEFAULT_URL = "https://sprintree.com";
-export const TOKEN_PREFIX = "itns_";
 const TOKEN_RE = /^itns_[A-Za-z0-9_-]{20,}$/;
 
 /** The token file: ${XDG_CONFIG_HOME:-$HOME/.config}/sprintree/stream-token. */
@@ -17,6 +16,13 @@ export function tokenFile(env = process.env) {
   const xdg = env.XDG_CONFIG_HOME;
   const base = xdg && path.isAbsolute(xdg) ? xdg : path.join(env.HOME || env.USERPROFILE || homedir(), ".config");
   return path.join(base, "sprintree", "stream-token");
+}
+
+/** The error code of a server answer: {"error":{"code"}} (the real envelope), else a flat {"code"} or {"error":"code"}. "" when there is none. */
+export function errorCode(json) {
+  if (typeof json?.error?.code === "string") return json.error.code;
+  if (typeof json?.code === "string") return json.code;
+  return typeof json?.error === "string" ? json.error : "";
 }
 
 /** True when `t` is shaped like a live-events token (itns_ and at least 20 token characters). */

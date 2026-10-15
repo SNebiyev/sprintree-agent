@@ -29,6 +29,7 @@ async function fake(tokenAnswers, start = {}) {
       }
       const n = calls.filter((c) => c.url === "/api/stream/device/token").length;
       const [status, json] = tokenAnswers[Math.min(n, tokenAnswers.length) - 1];
+      if (status === "drop") return req.socket.destroy(); // a network error
       send(status, json);
     });
   });
@@ -90,7 +91,7 @@ test("an existing token file is replaced, and the output says so and points at r
   try {
     const r = await run(srv, { home });
     assert.equal(r.code, 0, r.err);
-    assert.match(r.out, /replaced the previous token.*revoke the old one in Settings -> API tokens/);
+    assert.match(r.out, /replaced the previous token.*revoke the old one in Settings > API & MCP > Personal access tokens/);
     assert.equal(readFileSync(r.file, "utf8"), `${TOKEN}\n`);
   } finally {
     await srv.close();
@@ -102,7 +103,7 @@ for (const [name, answer, message] of [
   ["expired", [400, env("expired_token")], "The code expired. Run /sprintree:connect again."],
   ["a token without the itns_ prefix", [200, { token: `itn_${BODY}` }], "The server answered without a usable token. Nothing was saved."],
   ["too many tokens", [409, { error: { kind: "conflict", code: "too_many_tokens", message: "20" } }], "This account already has 20 stream tokens. Revoke one in Settings, then run /sprintree:connect again."],
-  ["a server error", [500, {}], "The server refused the connection (HTTP 500). Nothing was saved."],
+  ["a refusal", [403, {}], "The server refused the connection (HTTP 403). Nothing was saved."],
 ]) {
   test(`${name}: exit 1, one message, no file, no token`, async () => {
     const srv = await fake([answer]);
@@ -117,6 +118,31 @@ for (const [name, answer, message] of [
     }
   });
 }
+
+test("a 502, a dropped connection and a 408 during the poll are waited out, then the token arrives", async () => {
+  const srv = await fake([[502, {}], ["drop", null], [408, {}], [200, { token: TOKEN }]]);
+  try {
+    const r = await run(srv);
+    assert.equal(r.code, 0, r.err);
+    assert.match(r.out, /Connected\./);
+    assert.equal(readFileSync(r.file, "utf8"), `${TOKEN}\n`);
+    assert.equal(srv.calls.filter((c) => c.url === "/api/stream/device/token").length, 4);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("a server that keeps answering 502 ends with the expired message at the deadline", async () => {
+  const srv = await fake([[502, {}]], { expires_in: 3 });
+  try {
+    const r = await run(srv);
+    assert.equal(r.code, 1);
+    assert.equal(lastLine(r.err), "The code expired. Run /sprintree:connect again.");
+    assert.ok(!existsSync(r.file));
+  } finally {
+    await srv.close();
+  }
+});
 
 test("the old flat error shapes are still understood as a fallback", async () => {
   const srv = await fake([[400, { code: "authorization_pending" }], [400, { error: "slow_down" }], [200, { token: TOKEN }]]);

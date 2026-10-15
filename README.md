@@ -169,7 +169,7 @@ replies, assignments and review requests to you, and `/claude ...` comments you 
   (`"project": "KEY"`), then restart the session: monitors start with it. The token is saved at `~/.config/sprintree/stream-token` (mode 0600).
 - **What you get:** lines with ids and enums only, never card text. The agent mentions what concerns its card, and acts on a `/claude`
   comment only when you wrote it. Without a token or a project the monitor prints nothing.
-- **Revoke:** delete the token in Sprintree Settings -> API tokens (starts with `itns_`) and remove the token file, or disable the plugin (`/plugin`).
+- **Revoke:** delete the token in Sprintree Settings → API & MCP → Personal access tokens (starts with `itns_`) and remove the token file, or disable the plugin (`/plugin`).
 - Rules for the agent: [SKILL.md, "Live events (monitor)"](skills/sprintree/SKILL.md#live-events-monitor).
 
 ## Configure (optional)
