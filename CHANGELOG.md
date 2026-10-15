@@ -6,6 +6,8 @@ version in the repo equal to the newest released heading below (`## [Unreleased]
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-15
+
 - SPD-1263: a Claude Code `SessionEnd` hook closes the agent run when the last active session of the repository ends, so a run no longer stays open for a day. The local state keeps when each session was last seen (`sessions`, no network call, pruned after a day); another session seen in the last 15 minutes keeps the run open. `/clear` and an in-session `/resume` end a session too but leave the run open (the SessionStart hook of the new session reads it back); quitting and then running `claude --resume` starts without the run; a crashed session's run still closes after a day idle, and a closed run is deleted a day later (was 30 days). The hook is gated on `SPRINTREE_RUNS_TOKEN` like the others, prints nothing and fails silently.
 - SPD-1017: CI job `install-smoke` installs the plugin with the real Claude Code, Codex and Gemini CLIs (pinned versions, no login, the CLIs other than claude-code installed without install scripts, checkout without a stored token) on Ubuntu, macOS and Windows, from a copy of the repo in a folder with a space in its path, and checks each CLI lists it; `st.mjs config` is checked there too (bash, and PowerShell on Windows).
 
