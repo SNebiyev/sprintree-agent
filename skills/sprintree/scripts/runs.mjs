@@ -37,6 +37,8 @@ const HOOK_TIMEOUT_MS = "3000"; // per request inside a hook: a hook must never 
 const BEAT_EVERY_MS = 60_000;
 const UNSUPPORTED_FOR_MS = 3_600_000; // after a refusal (old server, revoked token) the hooks stay quiet this long
 const UNREACHABLE_FOR_MS = 300_000; // after a timeout or a network error: a slow server never holds every prompt up
+const SESSION_ACTIVE_MS = 900_000; // another session of this repository seen within 15 minutes is still working: the run stays open
+const SESSION_KEEP_MS = 86_400_000; // sessions not seen for a day are forgotten on write
 const SHOWN_LANES = 20;
 const STATUSES = new Set(["running", "done", "failed", "blocked", "stale"]);
 const RESULT_MAX = 3900;
@@ -122,8 +124,17 @@ export function merged(now, from, state) {
     if (state.unsupportedUntil) out.unsupportedUntil = state.unsupportedUntil;
     else delete out.unsupportedUntil;
   }
+  if (state.sessions || now.sessions || from.sessions) {
+    const mine = objectOf(state.sessions);
+    const was = objectOf(from.sessions);
+    out.sessions = { ...objectOf(now.sessions) };
+    for (const [id, t] of Object.entries(mine)) if (t !== was[id]) out.sessions[id] = t;
+    for (const id of Object.keys(was)) if (!(id in mine)) delete out.sessions[id]; // an ended session stays ended
+  }
   return out;
 }
+
+const objectOf = (x) => (x && typeof x === "object" && !Array.isArray(x) ? x : {});
 
 function writeState(file, state, from) {
   mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
@@ -237,6 +248,25 @@ function statusText(d, env, all) {
 
 const FINISHED = new Set(["done", "failed", "blocked", "stale"]);
 
+/** Closes the run in `state` on the server and forgets it; a run closed or deleted already is forgotten all the same. */
+async function closeRun(call, state) {
+  try {
+    await call("close_run", { run: state.run });
+  } catch (e) {
+    if (e instanceof Refused || !GONE_RE.test(e?.message ?? "")) throw e;
+  }
+  state.run = null;
+}
+
+/** Notes that the session of this event is alive (no network, the caller writes the state); sessions unseen for a day go. */
+function touchSession(state, id, now) {
+  if (!id) return;
+  const sessions = objectOf(state.sessions);
+  for (const [k, t] of Object.entries(sessions)) if (!(now - t < SESSION_KEEP_MS)) delete sessions[k];
+  sessions[id] = now;
+  state.sessions = sessions;
+}
+
 /** The hook of one Claude Code event. Answers what to print (stdout goes into the context for SessionStart and UserPromptSubmit). */
 async function onHook(input, env, deps) {
   const now = deps.now();
@@ -247,15 +277,66 @@ async function onHook(input, env, deps) {
   const from = readState(file);
   const state = structuredClone(from);
   if (state.unsupportedUntil && now < state.unsupportedUntil && state.unsupportedUntil - now <= UNSUPPORTED_FOR_MS) return "";
+  const sid = typeof input.session_id === "string" ? input.session_id.slice(0, 200) : "";
   if (event === "PostToolUse") {
-    if (!agent || !state.run || now - (state.beats?.[agent] ?? 0) < BEAT_EVERY_MS) return ""; // only subagents beat, once a minute
+    // only subagents beat, once a minute; the session's own mark rides on that beat's write, a throttled call writes nothing
+    if (!agent || !state.run || now - (state.beats?.[agent] ?? 0) < BEAT_EVERY_MS) return "";
   } else if (event === "SessionStart" || event === "UserPromptSubmit") {
-    if (!state.run) return "";
+    if (!state.run) {
+      // no run yet: still mark the session (at most once a minute) so a run another session opens later knows this one is alive
+      if (sid && now - (objectOf(state.sessions)[sid] ?? 0) >= BEAT_EVERY_MS) {
+        touchSession(state, sid, now);
+        try {
+          writeState(file, state, from);
+        } catch {
+          // a read-only home: nothing to remember
+        }
+      }
+      return "";
+    }
   } else if (event === "SubagentStart" || event === "SubagentStop") {
     if (!agent) return "";
+  } else if (event === "SessionEnd") {
+    if (!state.run) {
+      // no run to close, but the ending session must not stay marked or a run another session opens later would wait for it
+      if (sid && sid in objectOf(state.sessions)) {
+        delete state.sessions[sid];
+        try {
+          writeState(file, state, from);
+        } catch {
+          // a read-only home: nothing to remember
+        }
+      }
+      return "";
+    }
+    if (sid) delete objectOf(state.sessions)[sid];
+    // /clear and an in-session /resume end a session that goes on under a new id (its SessionStart marks that id): the run
+    // survives, but the ending id must not stay marked or a later exit would think this session is still alive.
+    if (input.reason === "clear" || input.reason === "resume") {
+      if (sid) {
+        try {
+          writeState(file, state, from);
+        } catch {
+          // a read-only home: nothing to remember
+        }
+      }
+      return "";
+    }
+    if (sid) {
+      // The run is per repository: while another session of it was seen lately the run stays open for it, with no request.
+      if (Object.values(objectOf(state.sessions)).some((t) => now - t < SESSION_ACTIVE_MS)) {
+        try {
+          writeState(file, state, from);
+        } catch {
+          // a read-only home: the next hook asks the server again
+        }
+        return "";
+      }
+    }
   } else {
     return "";
   }
+  if (event !== "SessionEnd") touchSession(state, sid, now);
   let out = "";
   try {
     const call = await connect(env, deps.fetch);
@@ -275,6 +356,10 @@ async function onHook(input, env, deps) {
         delete state.beats[agent];
         break;
       }
+      case "SessionEnd":
+        // Only the last active session of the repository gets here (see above); a crashed one's run closes after a day idle.
+        await closeRun(call, state);
+        break;
       case "SessionStart": {
         const d = await call("get_run", { run: state.run });
         if (d.run.status !== "open") {
@@ -373,12 +458,7 @@ export async function main(argv, deps = {}) {
     }
     const call = await connect(env, d.fetch, (s) => err(clean(s, env)));
     if (cmd === "close") {
-      try {
-        await call("close_run", { run: state.run });
-      } catch (e) {
-        if (e instanceof Refused || !GONE_RE.test(e?.message ?? "")) throw e; // closed or deleted already: forget it all the same
-      }
-      state.run = null;
+      await closeRun(call, state);
       writeState(file, state);
       out("Closed the agent run; the next subagent starts a new one.");
       return 0;

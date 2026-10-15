@@ -55,7 +55,7 @@ const stateOf = (r) => {
 
 test("without SPRINTREE_RUNS_TOKEN a hook does nothing: no request, no output, no file", async () => {
   const s = server();
-  for (const ev of ["SubagentStart", "PostToolUse", "SubagentStop", "SessionStart", "UserPromptSubmit"]) {
+  for (const ev of ["SubagentStart", "PostToolUse", "SubagentStop", "SessionStart", "SessionEnd", "UserPromptSubmit"]) {
     const r = await hook({ hook_event_name: ev, agent_id: "a1" }, { fetch: s.fetch, token: "" });
     assert.equal(r.code, 0);
     assert.equal(r.out, "");
@@ -138,6 +138,83 @@ test("SessionStart after /clear tells the main agent where every lane stands, as
   assert.equal(stateOf(r).state.version, 6);
 });
 
+test("SessionEnd closes the run and forgets it, silently, for every reason but clear and resume", async () => {
+  for (const reason of ["prompt_input_exit", "logout", "other", undefined]) {
+    const dir = tmpDir("runs-");
+    await hook({ hook_event_name: "SubagentStart", agent_id: "a1" }, { fetch: server().fetch, dir });
+    const s = server();
+    const r = await hook({ hook_event_name: "SessionEnd", ...(reason ? { reason } : {}) }, { fetch: s.fetch, dir });
+    assert.equal(r.code, 0);
+    assert.equal(r.out, "", `silent (${reason})`);
+    assert.deepEqual(s.asked, [{ name: "close_run", args: { run: RUN } }], String(reason));
+    assert.equal(stateOf(r).state.run, null);
+  }
+});
+
+test("SessionEnd after /clear or --resume leaves the run open and asks nothing", async () => {
+  for (const reason of ["clear", "resume"]) {
+    const dir = tmpDir("runs-");
+    await hook({ hook_event_name: "SubagentStart", agent_id: "a1" }, { fetch: server().fetch, dir });
+    const s = server();
+    const r = await hook({ hook_event_name: "SessionEnd", reason }, { fetch: s.fetch, dir });
+    assert.equal(r.out, "");
+    assert.equal(s.fetch.calls.length, 0, reason);
+    assert.equal(stateOf(r).state.run, RUN, reason);
+  }
+});
+
+test("SessionEnd without a run asks nothing; a failing or refused close is silent and keeps the run for the idle close", async () => {
+  const s = server();
+  const none = await hook({ hook_event_name: "SessionEnd", reason: "other" }, { fetch: s.fetch });
+  assert.equal(none.code, 0);
+  assert.equal(s.fetch.calls.length, 0);
+  for (const bad of [{ refuse: true }, { unknown: true }]) {
+    const dir = tmpDir("runs-");
+    await hook({ hook_event_name: "SubagentStart", agent_id: "a1" }, { fetch: server().fetch, dir });
+    const r = await hook({ hook_event_name: "SessionEnd", reason: "other" }, { fetch: server(bad).fetch, dir });
+    assert.equal(r.code, 0);
+    assert.equal(r.out, "");
+    assert.equal(r.err, "");
+    assert.equal(stateOf(r).state.run, RUN, "kept for the idle close");
+  }
+});
+
+test("SessionEnd of a session without a run forgets its mark, so a later exit of the run's session closes the run", async () => {
+  const t = 10_000_000;
+  const dir = tmpDir("runs-");
+  await hook({ hook_event_name: "UserPromptSubmit", session_id: "A" }, { fetch: server().fetch, dir, now: t });
+  const none = server();
+  const a = await hook({ hook_event_name: "SessionEnd", reason: "other", session_id: "A" }, { fetch: none.fetch, dir, now: t + 1000 });
+  assert.equal(none.fetch.calls.length, 0, "no request");
+  assert.ok(!("A" in (stateOf(a).state.sessions ?? {})), "A is forgotten");
+  await hook({ hook_event_name: "SubagentStart", agent_id: "a1", session_id: "B" }, { fetch: server().fetch, dir, now: t + 2000 });
+  const s = server();
+  const b = await hook({ hook_event_name: "SessionEnd", reason: "other", session_id: "B" }, { fetch: s.fetch, dir, now: t + 3000 });
+  assert.deepEqual(s.asked, [{ name: "close_run", args: { run: RUN } }]);
+  assert.equal(stateOf(b).state.run, null);
+});
+
+test("/clear then exit: the cleared id is forgotten, the new id's exit closes the run", async () => {
+  const t = 10_000_000;
+  const dir = tmpDir("runs-");
+  await hook({ hook_event_name: "SubagentStart", agent_id: "a1", session_id: "sid1" }, { fetch: server().fetch, dir, now: t });
+  await hook({ hook_event_name: "SessionEnd", reason: "clear", session_id: "sid1" }, { fetch: server().fetch, dir, now: t + 1000 });
+  await hook({ hook_event_name: "SessionStart", source: "clear", session_id: "sid2" }, { fetch: server({ unchanged: true }).fetch, dir, now: t + 2000 });
+  const s = server();
+  const r = await hook({ hook_event_name: "SessionEnd", reason: "other", session_id: "sid2" }, { fetch: s.fetch, dir, now: t + 3000 });
+  assert.deepEqual(s.asked, [{ name: "close_run", args: { run: RUN } }]);
+  assert.equal(stateOf(r).state.run, null);
+});
+
+test("a mark older than a day is pruned on the next write", async () => {
+  const t = 100_000_000;
+  const dir = tmpDir("runs-");
+  const first = await hook({ hook_event_name: "UserPromptSubmit", session_id: "old" }, { fetch: server().fetch, dir, now: t });
+  assert.ok("old" in stateOf(first).state.sessions);
+  const r = await hook({ hook_event_name: "UserPromptSubmit", session_id: "new" }, { fetch: server().fetch, dir, now: t + 25 * 3_600_000 });
+  assert.deepEqual(Object.keys(stateOf(r).state.sessions), ["new"], "the 25h-old entry is gone");
+});
+
 test("SessionStart says nothing without a run, and forgets a closed one", async () => {
   const s = server({ status: "closed" });
   const dir = tmpDir("runs-");
@@ -218,7 +295,7 @@ test("hooks.json: every hook first tests the token in the shell and can never fa
   const doc = JSON.parse(readFileSync(path.join(ROOT, "claude-hooks", "hooks.json"), "utf8"));
   const plugin = JSON.parse(readFileSync(path.join(ROOT, ".claude-plugin", "plugin.json"), "utf8"));
   assert.equal(plugin.hooks, "./claude-hooks/hooks.json");
-  assert.deepEqual(Object.keys(doc.hooks).sort(), ["PostToolUse", "SessionStart", "Stop", "SubagentStart", "SubagentStop", "UserPromptSubmit"]);
+  assert.deepEqual(Object.keys(doc.hooks).sort(), ["PostToolUse", "SessionEnd", "SessionStart", "Stop", "SubagentStart", "SubagentStop", "UserPromptSubmit"]);
   for (const [event, groups] of Object.entries(doc.hooks)) {
     for (const g of groups) {
       for (const h of g.hooks) {
@@ -289,6 +366,55 @@ test("hooks running at the same time keep each other's changes", () => {
   assert.equal(merged({ ...now, run: null }, from, { ...from }).run, null, "a run closed meanwhile stays closed");
   assert.equal(merged({ run: "other" }, {}, { run: RUN, version: 1 }).run, "other", "a run another hook started is kept");
   assert.deepEqual(merged(now, from, { ...from, beats: {} }).beats, { c3: 5 }, "a stopped lane's beat goes");
+});
+
+test("sessions merge like beats: concurrent marks are kept, an ended session stays ended", () => {
+  const from = { run: RUN, sessions: { s1: 1, s2: 2 } };
+  const now = { run: RUN, sessions: { s1: 1, s2: 2, s3: 7 } };
+  assert.deepEqual(merged(now, from, { ...from, sessions: { s1: 9, s2: 2 } }).sessions, { s1: 9, s2: 2, s3: 7 }, "a mark written meanwhile is not dropped");
+  assert.deepEqual(merged(now, from, { ...from, sessions: { s1: 1 } }).sessions, { s1: 1, s3: 7 }, "an ended session goes, the rest stays");
+  assert.deepEqual(merged({ run: RUN }, { run: RUN }, { run: RUN, sessions: { s1: 4 } }).sessions, { s1: 4 }, "the first mark");
+  assert.equal("sessions" in merged({ run: RUN }, { run: RUN }, { run: RUN }), false, "no sessions key from nothing");
+});
+
+test("SessionEnd keeps the run open while another session of the repository was seen within 15 minutes", async () => {
+  const dir = tmpDir("runs-");
+  const t = 10_000_000;
+  await hook({ hook_event_name: "SubagentStart", agent_id: "a1", session_id: "me" }, { fetch: server().fetch, dir, now: t });
+  await hook({ hook_event_name: "UserPromptSubmit", session_id: "other" }, { fetch: server({ unchanged: true }).fetch, dir, now: t + 60_000 });
+  const s = server();
+  const r = await hook({ hook_event_name: "SessionEnd", reason: "other", session_id: "me" }, { fetch: s.fetch, dir, now: t + 60_000 + 5 * 60_000 });
+  assert.equal(r.out, "");
+  assert.equal(s.fetch.calls.length, 0, "no request");
+  const { state } = stateOf(r);
+  assert.equal(state.run, RUN);
+  assert.deepEqual(Object.keys(state.sessions), ["other"], "own entry removed");
+  const last = await hook({ hook_event_name: "SessionEnd", reason: "other", session_id: "other" }, { fetch: s.fetch, dir, now: t + 3_600_000 });
+  assert.deepEqual(s.asked, [{ name: "close_run", args: { run: RUN } }], "the last session closes it");
+  assert.equal(stateOf(last).state.run, null);
+});
+
+test("SessionEnd closes when the other session was last seen 20 minutes ago, or the event has no session id; clear and resume still keep it", async () => {
+  const t = 10_000_000;
+  const dir = tmpDir("runs-");
+  await hook({ hook_event_name: "SubagentStart", agent_id: "a1", session_id: "me" }, { fetch: server().fetch, dir, now: t });
+  await hook({ hook_event_name: "UserPromptSubmit", session_id: "other" }, { fetch: server({ unchanged: true }).fetch, dir, now: t });
+  const s = server();
+  const r = await hook({ hook_event_name: "SessionEnd", reason: "logout", session_id: "me" }, { fetch: s.fetch, dir, now: t + 20 * 60_000 });
+  assert.deepEqual(s.asked, [{ name: "close_run", args: { run: RUN } }]);
+  assert.equal(stateOf(r).state.run, null);
+  const dir2 = tmpDir("runs-");
+  await hook({ hook_event_name: "SubagentStart", agent_id: "a1", session_id: "other" }, { fetch: server().fetch, dir: dir2, now: t });
+  const s2 = server();
+  await hook({ hook_event_name: "SessionEnd", reason: "other" }, { fetch: s2.fetch, dir: dir2, now: t + 1000 });
+  assert.equal(s2.asked.length, 1, "no session id: as before, it closes");
+  const dir3 = tmpDir("runs-");
+  await hook({ hook_event_name: "SubagentStart", agent_id: "a1", session_id: "me" }, { fetch: server().fetch, dir: dir3, now: t });
+  const s3 = server();
+  const c = await hook({ hook_event_name: "SessionEnd", reason: "clear", session_id: "me" }, { fetch: s3.fetch, dir: dir3, now: t + 1000 });
+  assert.equal(s3.fetch.calls.length, 0);
+  assert.ok(!("me" in stateOf(c).state.sessions), "a cleared session id is forgotten, the run stays");
+  assert.equal(stateOf(c).state.run, RUN);
 });
 
 test("a refusal in text, an unknown tool in any case and a lane that is not there", async () => {
