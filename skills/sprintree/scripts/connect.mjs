@@ -116,17 +116,16 @@ export async function main({ env = process.env, log = (l) => process.stdout.writ
     interval = Math.min(interval + 5, MAX_INTERVAL);
   };
   const expiresIn = Math.min(Math.max(Number(d.expires_in) || 600, 1), 3600);
-  // 30 s under the 600 s Bash timeout of commands/connect.md. The last FINAL of it is kept for one more poll,
-  // so an approval made after the previous poll is still fetched before the code is called expired
+  // 30 s under the 600 s Bash timeout of commands/connect.md. The last FINAL of it is kept for the last poll's request:
+  // the clipped sleep ends at deadline - FINAL, so an approval up to FINAL before the deadline is fetched. No poll follows
+  // it at once (the server answers slow_down to a poll that comes too soon)
   const deadline = processStart + Math.min(expiresIn, 570) * unit;
   const MIN_REQUEST_MS = Math.max(1, Math.min(250, unit)); // less than this is left: no request is worth starting
   const FINAL = Math.min(5 * unit, 15_000);
-  let last = false; // the poll inside the final window runs once, then the loop ends
   for (;;) {
-    if (last) break;
     const wait = Math.min(interval * unit, deadline - Date.now() - FINAL);
-    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-    else last = true;
+    if (wait <= 0) break;
+    await new Promise((r) => setTimeout(r, wait));
     const remaining = deadline - Date.now();
     if (remaining < MIN_REQUEST_MS) break;
     const r = await post(base.origin, "/api/stream/device/token", { device_code: deviceCode }, true, Math.min(15_000, remaining));

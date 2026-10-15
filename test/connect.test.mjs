@@ -16,7 +16,7 @@ const DEADLINE_EXPIRED = "The code expired. Run /sprintree:connect again. If you
 const posix = process.platform !== "win32";
 
 /** `tokenAnswers`: what POST /api/stream/device/token answers in turn, as [status, json]; the last one repeats. */
-async function fake(tokenAnswers, start = {}) {
+async function fake(tokenAnswers, start = {}, minGapMs = 0) {
   const calls = [];
   const server = createServer((req, res) => {
     let body = "";
@@ -29,6 +29,8 @@ async function fake(tokenAnswers, start = {}) {
         return send(200, { device_code: "dev-code-1", user_code: "ABCD-1234", verification_uri: `${origin}/connect`, verification_uri_complete: `${origin}/connect?code=ABCD-1234`, interval: 1, expires_in: 60, ...start });
       }
       const n = calls.filter((c) => c.url === "/api/stream/device/token").length;
+      const prev = calls.filter((c) => c.url === "/api/stream/device/token").at(-2); // the real server answers slow_down to a poll that comes too soon
+      if (prev && calls.at(-1).at - prev.at < minGapMs) return send(400, env("slow_down"));
       const [status, json, raw] = typeof tokenAnswers === "function" ? tokenAnswers(n, calls) : tokenAnswers[Math.min(n, tokenAnswers.length) - 1];
       if (status === "drop") return req.socket.destroy(); // a network error
       if (raw !== undefined) return res.writeHead(status, { "Content-Type": "text/plain" }).end(raw); // a body that is not JSON
@@ -218,7 +220,7 @@ test("transient errors grow the interval (at most 60 units) and the run still en
 
 test("an approval in the last poll interval before the deadline is still fetched and saved", async () => {
   // 10 ms per unit, interval 20 units, expires_in 60: the deadline is 600 ms, the plain polls fall at ~200 and ~400 ms
-  const srv = await fake((n, calls) => (Date.now() - calls[0].at >= 450 ? [200, { token: TOKEN }] : [400, env("authorization_pending")]), { interval: 20, expires_in: 60 });
+  const srv = await fake((n, calls) => (Date.now() - calls[0].at >= 450 ? [200, { token: TOKEN }] : [400, env("authorization_pending")]), { interval: 20, expires_in: 60 }, 30); // 3 units between polls
   try {
     const r = await run(srv, { extra: { SPRINTREE_CONNECT_TEST_SECOND_MS: "10" } });
     assert.equal(r.code, 0, r.err);
