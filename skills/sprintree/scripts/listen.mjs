@@ -336,7 +336,9 @@ async function readSmall(res) {
 function codeOf(body) {
   try {
     const j = JSON.parse(body);
-    return typeof j?.code === "string" ? j.code : typeof j?.error === "string" ? j.error : "";
+    if (typeof j?.error?.code === "string") return j.error.code;
+    if (typeof j?.code === "string") return j.code;
+    return typeof j?.error === "string" ? j.error : "";
   } catch {
     return "";
   }

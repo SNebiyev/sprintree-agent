@@ -230,7 +230,8 @@ test("a changed label on reconnect prints the hello again; a long outage prints 
 for (const [name, status, body, line] of [
   ["401", 401, "{}", "sprintree-events: the live-events token was rejected; run /sprintree:connect"],
   ["404", 404, "{}", "sprintree-events: project SPD not found or not shared with you"],
-  ["429 connection_limit", 429, '{"code":"connection_limit"}', "sprintree-events: 10 live connections already open; not connecting"],
+  ["429 connection_limit", 429, '{"error":{"kind":"rate_limited","code":"connection_limit","message":"10 live"}}', "sprintree-events: 10 live connections already open; not connecting"],
+  ["429 connection_limit, flat fallback", 429, '{"code":"connection_limit"}', "sprintree-events: 10 live connections already open; not connecting"],
   ["another 4xx", 403, "{}", "sprintree-events: the server answered 403; not connecting"],
 ]) {
   test(`${name}: one line, no retry, exit 0, no token in the output`, async () => {
@@ -248,7 +249,7 @@ for (const [name, status, body, line] of [
 }
 
 test("a 429 without the connection_limit code is retried, honoring Retry-After", async () => {
-  const srv = await fake((req, res, n) => (n === 1 ? res.writeHead(429, { "Retry-After": "1", "Content-Type": "application/json" }).end('{"code":"slow"}') : sse(res, frame("hello", HELLO))));
+  const srv = await fake((req, res, n) => (n === 1 ? res.writeHead(429, { "Retry-After": "1", "Content-Type": "application/json" }).end('{"error":{"kind":"rate_limited","code":"slow","message":"x"}}') : sse(res, frame("hello", HELLO))));
   const p = start(srv.url);
   try {
     await p.until(1);

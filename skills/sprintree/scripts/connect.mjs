@@ -120,7 +120,7 @@ export async function main({ env = process.env, log = (l) => process.stdout.writ
       if (replaced) log("This replaced the previous token in that file: revoke the old one in Settings -> API tokens.");
       return;
     }
-    const code = typeof r.json?.code === "string" ? r.json.code : typeof r.json?.error === "string" ? r.json.error : "";
+    const code = errorCode(r.json);
     if (r.status === 400 || r.status === 428) {
       if (code === "authorization_pending") continue;
       if (code === "slow_down") {
@@ -130,6 +130,7 @@ export async function main({ env = process.env, log = (l) => process.stdout.writ
       if (code === "access_denied") throw new Failure("Denied in the browser. Nothing was saved.");
       if (code === "expired_token") throw new Failure("The code expired. Run /sprintree:connect again.");
     }
+    if (r.status === 409 && code === "too_many_tokens") throw new Failure("This account already has 20 stream tokens. Revoke one in Settings, then run /sprintree:connect again.");
     if (r.status === 429) {
       interval += 5;
       continue;
@@ -151,4 +152,11 @@ if (isMainModule(process.argv[1], import.meta.url)) {
       process.exit(1);
     }
   );
+}
+
+// The server answers {"error":{"kind","code","message"}}; the flat {"code"} and {"error":"code"} shapes are a fallback.
+function errorCode(json) {
+  if (typeof json?.error?.code === "string") return json.error.code;
+  if (typeof json?.code === "string") return json.code;
+  return typeof json?.error === "string" ? json.error : "";
 }

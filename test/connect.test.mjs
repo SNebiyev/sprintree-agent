@@ -47,11 +47,14 @@ async function run(srv, { home = tmpDir("sa-connect-"), extra = {} } = {}) {
   return { code, out, err, file: path.join(home, "cfg", "sprintree", "stream-token"), dir: path.join(home, "cfg", "sprintree") };
 }
 
+// The real server envelope: {"error":{"kind","code","message"}}.
+const env = (code) => ({ error: { kind: "bad_request", code, message: `server says ${code}` } });
+
 test("pending, then slow_down, then the token: the link and code are printed, the token is saved 0600 and never printed", async () => {
   const srv = await fake([
-    [400, { code: "authorization_pending" }],
-    [400, { error: "slow_down" }],
-    [400, { code: "authorization_pending" }],
+    [400, env("authorization_pending")],
+    [400, env("slow_down")],
+    [400, env("authorization_pending")],
     [200, { token: TOKEN }],
   ]);
   try {
@@ -95,9 +98,10 @@ test("an existing token file is replaced, and the output says so and points at r
 });
 
 for (const [name, answer, message] of [
-  ["denied", [400, { code: "access_denied" }], "Denied in the browser. Nothing was saved."],
-  ["expired", [400, { code: "expired_token" }], "The code expired. Run /sprintree:connect again."],
+  ["denied", [400, env("access_denied")], "Denied in the browser. Nothing was saved."],
+  ["expired", [400, env("expired_token")], "The code expired. Run /sprintree:connect again."],
   ["a token without the itns_ prefix", [200, { token: `itn_${BODY}` }], "The server answered without a usable token. Nothing was saved."],
+  ["too many tokens", [409, { error: { kind: "conflict", code: "too_many_tokens", message: "20" } }], "This account already has 20 stream tokens. Revoke one in Settings, then run /sprintree:connect again."],
   ["a server error", [500, {}], "The server refused the connection (HTTP 500). Nothing was saved."],
 ]) {
   test(`${name}: exit 1, one message, no file, no token`, async () => {
@@ -114,8 +118,18 @@ for (const [name, answer, message] of [
   });
 }
 
+test("the old flat error shapes are still understood as a fallback", async () => {
+  const srv = await fake([[400, { code: "authorization_pending" }], [400, { error: "slow_down" }], [200, { token: TOKEN }]]);
+  try {
+    const r = await run(srv);
+    assert.equal(r.code, 0, r.err);
+  } finally {
+    await srv.close();
+  }
+});
+
 test("pending until expires_in ends: the code expired, exit 1", async () => {
-  const srv = await fake([[400, { code: "authorization_pending" }]], { interval: 1, expires_in: 4 });
+  const srv = await fake([[400, env("authorization_pending")]], { interval: 1, expires_in: 4 });
   try {
     const r = await run(srv);
     assert.equal(r.code, 1);
