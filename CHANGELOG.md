@@ -6,6 +6,8 @@ version in the repo equal to the newest released heading below (`## [Unreleased]
 
 ## [Unreleased]
 
+- SPD-1349: README rewritten for newcomers: a TL;DR first, a plain "How it works", an "On and off by default" table and an "Update" section; sections regrouped, no fact dropped. Docs only, no plugin change.
+
 ## [0.6.0] - 2026-10-16
 
 - SPD-1336: `/claude` commands are opt-in on the local machine, off by default. The `sprintree-events` monitor (`listen.mjs`) prints a command line, and the commands part of a "while you were away" summary, only when `SPRINTREE_COMMANDS` is `on`, `1` or `true` (set it in the `env` of your own `~/.claude/settings.json`); otherwise the connected line ends with `/claude commands off`. This closes the account-takeover path: someone who gets into your Sprintree account can no longer hand work to your local session. Status, mention, assignment and batch lines are unchanged. SKILL.md rule 2 and the README live-events section say so; the agent never turns it on itself.
