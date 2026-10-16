@@ -6,7 +6,7 @@ import { createServer } from "node:http";
 import path from "node:path";
 import test from "node:test";
 import { BODY, ROOT, childEnv, tmpDir } from "../test-support/helpers.mjs";
-import { dedupe, formatEvent, projectOf, sessionId, sseParser } from "../skills/sprintree/scripts/listen.mjs";
+import { commandsOn, dedupe, formatEvent, projectOf, sessionId, sseParser } from "../skills/sprintree/scripts/listen.mjs";
 
 const SCRIPT = path.join(ROOT, "skills", "sprintree", "scripts", "listen.mjs");
 const TOKEN = `itns_${BODY}`;
@@ -49,6 +49,7 @@ function start(url, extra = {}, { writeTokenFile = false } = {}) {
     SPRINTREE_LISTEN_TEST_BACKOFF_MS: "5",
     SPRINTREE_STREAM_TOKEN: writeTokenFile ? "" : TOKEN,
     CLAUDE_CODE_SESSION_ID: "",
+    SPRINTREE_COMMANDS: "",
     ...extra,
   });
   const child = spawn(process.execPath, [SCRIPT], { cwd: home, env, stdio: ["pipe", "pipe", "pipe"] });
@@ -102,7 +103,7 @@ test("hello and every event type are printed as one line each, the claim suffix 
       frame("sprintree", { type: "batch", count: 1, to: "done", actor: "x" }, 12)
     )
   );
-  const p = start(srv.url);
+  const p = start(srv.url, { SPRINTREE_COMMANDS: "on" });
   try {
     await p.until(9);
     assert.deepEqual(p.lines, [
@@ -188,7 +189,7 @@ test("a reconnect sends the same session and Last-Event-ID, prints no second hel
       sse(res, frame("hello", HELLO), frame("sprintree", { type: "batch", count: 2, to: "done", actor: "y" }, "a3"));
     }
   });
-  const p = start(srv.url, { CLAUDE_CODE_SESSION_ID: "raw-session-id" });
+  const p = start(srv.url, { CLAUDE_CODE_SESSION_ID: "raw-session-id", SPRINTREE_COMMANDS: "on" });
   try {
     await p.until(3);
     assert.deepEqual(p.lines, ["sprintree-events connected · session=s-1 · name=main · project=SPD", "1 card → done · @x", "2 cards → done · @y"]);
@@ -212,7 +213,7 @@ test("a changed label on reconnect prints the hello again; a long outage prints 
     sse(res, frame("hello", { ...HELLO, label: "other" }, "2"));
   });
   // 60 "seconds" are 60 * 5 ms = 300 ms here; backoff 5, 10, 20, 40, 80 ... passes 300 ms after a few failures
-  const p = start(srv.url);
+  const p = start(srv.url, { SPRINTREE_COMMANDS: "on" });
   try {
     await p.until(4, 15000);
     assert.deepEqual(p.lines, [
@@ -403,7 +404,7 @@ test("a frame whose ev was already printed is dropped, also after a reconnect; b
       sse(res, frame("hello", HELLO), frame("sprintree", note, "a5"), frame("sprintree", status, "a6"), frame("sprintree", { ...note, ev: "n2" }, "a7"));
     }
   });
-  const p = start(srv.url);
+  const p = start(srv.url, { SPRINTREE_COMMANDS: "on" });
   try {
     await p.until(5);
     await new Promise((r) => setTimeout(r, 200));
@@ -430,4 +431,78 @@ test("dedupe: a repeat is reported, the oldest key is evicted past the cap", () 
   assert.equal(seen("c"), false); // evicts a
   assert.equal(seen("b"), true);
   assert.equal(seen("a"), false); // a was evicted, so it is new again
+});
+
+/** Runs the monitor against a stream of hello, status, command, notification and two summaries; returns the lines printed. */
+async function commandRun(extra) {
+  const srv = await fake((req, res) =>
+    sse(
+      res,
+      frame("hello", HELLO, 1),
+      frame("sprintree", { type: "status", issue: "SPD-1", from: "todo", to: "done", actor: "ann", ev: "s1" }, 2),
+      frame("sprintree", { type: "command", issue: "SPD-1", comment: "c1", ev: "c1" }, 3),
+      frame("sprintree", { type: "notification", kind: "mention", issue: "SPD-1", actor: "ann", ev: "n1" }, 4),
+      frame("sprintree", { type: "summary", mentions: 0, status: 0, commands: 3 }, 5),
+      frame("sprintree", { type: "summary", mentions: 2, status: 0, commands: 1 }, 6),
+      frame("sprintree", { type: "batch", count: 2, to: "done", actor: "x" }, 7)
+    )
+  );
+  const p = start(srv.url, extra);
+  try {
+    await p.until(1);
+    await new Promise((r) => setTimeout(r, 400));
+    return [...p.lines];
+  } finally {
+    await p.quit();
+    await srv.close();
+  }
+}
+const CONNECTED = "sprintree-events connected · session=s-1 · name=main · project=SPD";
+const NOTES = "while you were away: 2 notifications (mentions, replies, assignments, reviews)";
+
+test("by default /claude commands are off: the connected line says so, command frames and the commands part of a summary print nothing, other lines still arrive", async () => {
+  assert.deepEqual(await commandRun({}), [
+    `${CONNECTED} · /claude commands off`,
+    "SPD-1 · status todo→done · @ann · ev=s1",
+    "SPD-1 · mention · @ann · ev=n1",
+    NOTES,
+    "2 cards → done · @x",
+  ]);
+});
+
+for (const v of ["on", "1", "true", " ON "]) {
+  test(`SPRINTREE_COMMANDS=${JSON.stringify(v)} turns commands on: the command line prints, the summary keeps its commands part, the connected line has no suffix`, async () => {
+    assert.deepEqual(await commandRun({ SPRINTREE_COMMANDS: v }), [
+      CONNECTED,
+      "SPD-1 · status todo→done · @ann · ev=s1",
+      "SPD-1 · /claude command · comment=c1 · ev=c1",
+      "SPD-1 · mention · @ann · ev=n1",
+      "while you were away: 3 /claude commands",
+      `${NOTES}, 1 /claude command`,
+      "2 cards → done · @x",
+    ]);
+  });
+}
+
+for (const v of ["off", "yes", "", "0"]) {
+  test(`SPRINTREE_COMMANDS=${JSON.stringify(v)} keeps commands off`, async () => {
+    const lines = await commandRun({ SPRINTREE_COMMANDS: v });
+    assert.equal(lines[0], `${CONNECTED} · /claude commands off`);
+    assert.ok(!lines.some((l) => l.includes("/claude command ")) && !lines.some((l) => l.includes("/claude commands") && l !== lines[0]));
+    assert.equal(lines.length, 5);
+  });
+}
+
+test("commandsOn and formatEvent({ commands })", () => {
+  assert.equal(commandsOn({}), false);
+  assert.equal(commandsOn({ SPRINTREE_COMMANDS: "True" }), true);
+  assert.equal(commandsOn({ SPRINTREE_COMMANDS: "yes" }), false);
+  const cmd = { type: "command", issue: "SPD-1", comment: "c1", ev: "e1" };
+  assert.equal(formatEvent(cmd, { commands: false }), null);
+  assert.ok(formatEvent(cmd).includes("/claude command"));
+  assert.equal(formatEvent({ type: "summary", mentions: 0, status: 0, commands: 2 }, { commands: false }), null);
+  assert.equal(formatEvent({ type: "summary", mentions: 1, status: 0, commands: 2 }, { commands: false }), `${NOTES.replace("2 notifications", "1 notification")}`);
+  assert.ok(formatEvent({ type: "summary", mentions: 1, status: 0, commands: 2 }).endsWith("2 /claude commands"));
+  const st = { type: "status", issue: "SPD-1", from: "a", to: "b", actor: "x", ev: "e" };
+  assert.equal(formatEvent(st, { commands: false }), formatEvent(st));
 });

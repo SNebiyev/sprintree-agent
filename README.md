@@ -170,6 +170,13 @@ replies, assignments and review requests to you, and `/claude ...` comments you 
 - **Permissions:** tick Account settings when the plugin signs in to Sprintree's MCP (`/mcp`, sprintree): `set_stream_focus` and `claim_stream_event` need the `mcp:account` scope. Without it `/claude` commands are not acted on. Both tools take the `session` id the monitor prints in its `connected` line.
 - **What you get:** lines with ids and enums only, never card text. The agent mentions what concerns its card, and acts on a `/claude`
   comment only when you wrote it. Without a token or a project the monitor prints nothing.
+- **`/claude` commands are off by default.** Turn them on in your user settings, `~/.claude/settings.json` (merge into the existing file), and restart the session:
+
+  ```json
+  {"env": {"SPRINTREE_COMMANDS": "on"}}
+  ```
+
+  Put it in the user settings, not in a repository's committed `.claude/settings.json`. Set it the same for every session: a command routed to the session that has the issue in focus is not re-sent to another session. Status, mention and assignment lines arrive either way. Why: anyone who gets into your Sprintree account could otherwise give work to your agent. While it is off, the `connected` line ends with `/claude commands off`.
 - **Revoke:** delete the token in Sprintree Settings → API & MCP → Personal access tokens (starts with `itns_`) and remove the token file, or disable the plugin (`/plugin`).
 - Rules for the agent: [SKILL.md, "Live events (monitor)"](skills/sprintree/SKILL.md#live-events-monitor).
 

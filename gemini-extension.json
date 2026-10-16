@@ -1,6 +1,6 @@
 {
   "name": "sprintree",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Sprintree MCP server plus a skill that keeps the board true to what your session did.",
   "contextFileName": "GEMINI.md",
   "mcpServers": {

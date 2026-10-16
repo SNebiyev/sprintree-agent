@@ -115,6 +115,7 @@ export function checkText(text, snap, file = "text") {
     const at = `${file}:${fence.start}`;
     let obj;
     try { obj = JSON.parse(fence.body.join("\n")); } catch { problems.push(`${at}: JSON block does not parse`); return; }
+    if (Object.keys(obj ?? {}).join() === "env" && typeof obj.env === "object") return; // a settings.json snippet, not arguments
     if (obj && typeof obj === "object" && !Array.isArray(obj) && !Object.keys(obj).every((k) => KNOWN_CONFIG_KEYS.includes(k))) checkObject(at, fence.tool, obj);
   };
   lines.forEach((line, i) => {
@@ -158,6 +159,7 @@ export function checkText(text, snap, file = "text") {
     for (const { index, raw } of jsonObjects(code)) {
       let obj;
       try { obj = JSON.parse(raw); } catch { problems.push(`${at}: JSON example does not parse: ${raw}`); continue; }
+      if (Object.keys(obj).join() === "env" && obj.env && typeof obj.env === "object") continue; // a Claude Code settings.json snippet (README, SPD-1336), not tool arguments
       checkObject(at, toolFor(index), obj);
     }
     if (mentions.length) carry = mentions[mentions.length - 1].name;
