@@ -1,9 +1,9 @@
 ---
 description: Connect live Sprintree events to Claude Code (approve a code in the browser, no token to paste)
-allowed-tools: Bash(node:*)
+allowed-tools: Bash(node "${CLAUDE_PLUGIN_ROOT}/skills/sprintree/scripts/connect.mjs")
 ---
 
-Run the connect script and show its output to the user. It prints a link and a code, opens the browser, waits for the approval (up to about 9.5 minutes) and saves a live-events token on this machine. Run it in the foreground with a Bash timeout of 600000 ms.
+Run the connect script and show its output to the user. It prints a link and a code, opens the browser, waits for the approval (up to about 9.5 minutes) and saves a live-events token on this machine. Run it in the foreground with a Bash timeout of 600000 ms, exactly as written below with nothing added (no arguments, no `2>&1`, no pipes).
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/skills/sprintree/scripts/connect.mjs"

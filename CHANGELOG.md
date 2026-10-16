@@ -4,6 +4,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versions follo
 While 0.x, a skill rule change is a minor bump and a fix is a patch. `scripts/check-version.mjs` keeps every
 version in the repo equal to the newest released heading below (`## [Unreleased]` is skipped).
 
+## [0.7.2] - 2026-10-16
+
+- SPD-1363: `/sprintree:connect` no longer lets the model run any `node` command for the turn. Its `allowed-tools` was `Bash(node:*)`; it is now the exact command `Bash(node "${CLAUDE_PLUGIN_ROOT}/skills/sprintree/scripts/connect.mjs")`, so `node -e ...` still asks for permission, and the rule is not dropped in auto mode. A test fails if any `commands/*.md` allows a broad Bash prefix.
+
 ## [0.7.1] - 2026-10-16
 
 - SPD-1395: an agent-runs hook ends within about 5 seconds even when the server is slow (it used to wait up to 9 s and hit Claude Code's 10 s hook timeout, "timed out after 10s - output discarded"). One 5 s budget covers all requests of a hook (2 s each), the hard process cap is 7 s, and a timed-out hook now also writes the 5-minute backoff, so the next prompts do not wait again.
