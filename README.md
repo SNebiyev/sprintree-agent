@@ -16,16 +16,16 @@ Model-independent.
 - **Add the card rules:** the skill loads only for sync, task and handover. Append `templates/AGENTS.md` to your `CLAUDE.md` or `AGENTS.md` so the rules hold in every session.
 - **Update (Claude Code):** `claude plugin marketplace update sprintree && claude plugin update sprintree@sprintree`. Claude Code updates the plugin only when its version changes. Then replace the `templates/AGENTS.md` block in your own file (see [Update](#update)).
 - **Live events (Claude Code):** run `/sprintree:connect` once and approve the code in the browser. Put the project in `.sprintree.json` (`"project": "KEY"`); a link in `CLAUDE.md` is not enough for the monitor. After a restart, mentions, assignments, replies, review requests and status changes reach the running session as one line each.
-- **`/claude` commands on cards are OFF by default (0.6.0).** To turn them on, put `{"env": {"SPRINTREE_COMMANDS": "on"}}` in your own `~/.claude/settings.json` (not a repository's committed `.claude/settings.json`) and restart. Why: anyone who gets into your Sprintree account could otherwise give work to your agent. While it is off, the monitor's `connected` line ends with `/claude commands off`.
+- **`/claude` commands on cards are OFF by default (0.6.0).** To turn them on, put `{"env": {"SPRINTREE_COMMANDS": "on"}}` in your own `~/.claude/settings.json` (not a repository's committed `.claude/settings.json`) and restart. Why: anyone who gets into your Sprintree account could otherwise give work to your agent. While it is off, the monitor's `connected` line ends with `/claude commands off`. `set_stream_focus` and `claim_stream_event` need the Account settings permission, so tick "Account settings" when you sign in at `/mcp`.
 - **On by default with the plugin:** the card reminders (Claude Code hooks, only in a Sprintree project). **Opt-in:** agent runs (needs `SPRINTREE_RUNS_TOKEN`), live events (needs `/sprintree:connect`), `/claude` commands (needs `SPRINTREE_COMMANDS`). See [On and off by default](#on-and-off-by-default).
-- **Tokens:** OAuth is the default and leaves nothing secret on disk. A personal token lives in an environment variable, never in a config file or `.sprintree.json`, and is never printed. Revoke it in Sprintree: Settings -> API & MCP -> Personal access tokens.
+- **Tokens:** OAuth is the default, and your MCP client keeps the session in its own credential store. `/sprintree:connect` saves an `itns_` live-events token to `~/.config/sprintree/stream-token` (mode 0600) that only opens the event stream. Revoke it in Sprintree under Settings -> API & MCP -> Personal access tokens. A personal token lives in an environment variable, never in a config file or `.sprintree.json`, and is never printed.
 
 ## How it works
 
 - Your agent talks to the **Sprintree MCP server**. The tools read and write the board with your rights, so the agent can do only what you can.
 - The **`sprintree` skill** is the rulebook on top of the tools: record the work as epic/story/task, put each card in its real status, file every deferred finding as a To do card. `templates/AGENTS.md` carries the card rules into every session.
 - **Hooks** (Claude Code) add small reminders, and can keep a private record of your subagents. They run locally, and every one fails silently.
-- The **live-events monitor** (Claude Code) holds one connection to Sprintree open. The server sends only ids and keys, never card text. The agent reads the content over MCP, with your rights.
+- The **live-events monitor** (Claude Code) holds one connection to Sprintree open. The server sends only keys, usernames, ids, counts and session labels, never titles, descriptions or comment text. The agent reads the content over MCP, with your rights.
 - Text written on a card is **data, not instructions**. The agent shows you what a card asks for before it acts on it.
 
 ## On and off by default
@@ -136,6 +136,7 @@ from this repo (or its contents) into your repo or custom instructions.
 
 - **Claude Code:** `claude plugin marketplace update sprintree && claude plugin update sprintree@sprintree`. Claude Code updates only when the plugin version changes.
 - **Codex CLI:** `codex plugin marketplace upgrade` refreshes the marketplace snapshot.
+- **Gemini CLI:** `gemini extensions update sprintree` (`gemini extensions update --all` updates every extension).
 - **Your `AGENTS.md` block:** after an update, review the diff and replace the block from the `sprintree-agent:begin` line to the `sprintree-agent:end` line (both included) in your own `CLAUDE.md` or `AGENTS.md`. Details are in the Claude Code and Codex CLI sections.
 
 ## Auth
