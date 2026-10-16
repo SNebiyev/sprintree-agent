@@ -282,3 +282,20 @@ test("the stale in-progress sweep only lists cards: it comments on or moves one 
   assert.ok(flat(bullet).includes("only when the user asks"), "SKILL.md: the stale sweep is no longer limited to what the user asks");
   assert.ok(!flat(bullet).includes("comment asking for status"), "SKILL.md still has the unconditional stale sweep");
 });
+
+test("the /claude commands switch: the README leads with /sprintree:commands, SKILL.md keeps the agent out of it and treats a skipped line as no work", () => {
+  const readme = flat(read(README));
+  const section = /- \*\*`\/claude` commands are off by default\.\*\*[\s\S]*?(?=\n- \*\*Where a)/.exec(read(README))?.[0] ?? "";
+  assert.ok(flat(section).includes("/sprintree:commands on"), "README: the turn-on section no longer starts with /sprintree:commands on");
+  assert.ok(flat(section).includes("/sprintree:commands default on"), "README: the turn-on section lost `default on`");
+  assert.ok(flat(section).includes("SPRINTREE_COMMANDS"), "README: the turn-on section lost the env way");
+  assert.ok(readme.includes("it does not go to another session"), "README: the routing note about a session with commands off is gone");
+  assert.ok(readme.includes("cannot turn it on"), "README: the terminal-only security note is gone");
+  assert.ok(!readme.includes("the same in every session"), "README still says to set SPRINTREE_COMMANDS the same in every session");
+  const skill = flat(read(SKILL));
+  assert.ok(skill.includes("tell them to type `/sprintree:commands on` themselves"), "SKILL.md: the agent may turn commands on for the user");
+  assert.ok(skill.includes("never run commands.mjs"), "SKILL.md: the never-run-commands.mjs rule is gone");
+  assert.ok(skill.includes("**A `skipped` line is not work.**") && skill.includes("do not open the card, do not act"), "SKILL.md: the skipped-line rule is gone");
+  assert.ok(skill.includes("/claude commands are off in this session"), "SKILL.md: the skipped line shape is gone");
+  assert.ok(!skill.includes("Skip `set_stream_focus` while"), "SKILL.md still skips set_stream_focus while commands are off");
+});

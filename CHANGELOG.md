@@ -4,8 +4,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versions follo
 While 0.x, a skill rule change is a minor bump and a fix is a patch. `scripts/check-version.mjs` keeps every
 version in the repo equal to the newest released heading below (`## [Unreleased]` is skipped).
 
-## [Unreleased]
+## [0.7.0] - 2026-10-16
 
+- SPD-1360: `/sprintree:commands on|off|status|default on|off` (`commands/commands.md`, `commands.mjs`) switches `/claude` commands from the terminal. `on` and `off` apply to this session only and need no restart: `listen.mjs` watches the setting, prints `sprintree-events /claude commands on` or `off`, and reconnects with the new `X-Stream-Commands` header. `default` sets the state for every session without its own setting, running ones too (they reconnect within seconds). The order is this session, the default, `SPRINTREE_COMMANDS`, off. `status` also shows what the server confirmed. Only the user's terminal can change it: no MCP tool or web setting can.
+- SPD-1358: when a `/claude` command is addressed to a session that has commands off, the server does not pass it to another session and sends that session a `command_skipped` frame. The monitor prints `sprintree-events /claude command on KEY-12 skipped · /claude commands are off in this session`. The line carries no hint on how to turn commands on, so it cannot nudge the model.
+- SPD-1361: SKILL.md rules 2 and 3 and the line shapes, and the README, describe the above. The agent never turns commands on, even when asked, and tells the user to type `/sprintree:commands on`. A `skipped` line is not work: the agent only tells the user in one line. `set_stream_focus` is no longer skipped while commands are off. An off session holding focus gets the skipped line and the command goes nowhere else. The README no longer says to set `SPRINTREE_COMMANDS` the same in every session.
 - SPD-1349: README rewritten for newcomers: a TL;DR first, a plain "How it works", an "On and off by default" table and an "Update" section; sections regrouped, no fact dropped. Docs only, no plugin change.
 
 ## [0.6.0] - 2026-10-16

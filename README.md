@@ -16,8 +16,8 @@ Model-independent.
 - **Add the card rules:** the skill loads only for sync, task and handover. Append `templates/AGENTS.md` to your `CLAUDE.md` or `AGENTS.md` so the rules hold in every session.
 - **Update (Claude Code):** `claude plugin marketplace update sprintree && claude plugin update sprintree@sprintree`. Claude Code updates the plugin only when its version changes. Then replace the `templates/AGENTS.md` block in your own file (see [Update](#update)).
 - **Live events (Claude Code):** run `/sprintree:connect` once and approve the code in the browser. Put the project in `.sprintree.json` (`"project": "KEY"`); a link in `CLAUDE.md` is not enough for the monitor. After a restart, mentions, assignments, replies, review requests and status changes reach the running session as one line each.
-- **`/claude` commands on cards are OFF by default (0.6.0).** To turn them on, put `{"env": {"SPRINTREE_COMMANDS": "on"}}` in your own `~/.claude/settings.json` (not a repository's committed `.claude/settings.json`) and restart. Why: anyone who gets into your Sprintree account could otherwise give work to your agent. While it is off, the monitor's `connected` line ends with `/claude commands off`. `set_stream_focus` and `claim_stream_event` need the Account settings permission, so tick "Account settings" when you sign in at `/mcp`.
-- **On by default with the plugin:** the card reminders (Claude Code hooks, only in a Sprintree project). **Opt-in:** agent runs (needs `SPRINTREE_RUNS_TOKEN`), live events (needs `/sprintree:connect`), `/claude` commands (needs `SPRINTREE_COMMANDS`). See [On and off by default](#on-and-off-by-default).
+- **`/claude` commands on cards are OFF by default (0.6.0).** To turn them on for a session, type `/sprintree:commands on` in the terminal (no restart). `/sprintree:commands default on` does it for every session without its own setting, running ones too. Why: anyone who gets into your Sprintree account could otherwise give work to your agent. While it is off, the monitor's `connected` line ends with `/claude commands off`. `set_stream_focus` and `claim_stream_event` need the Account settings permission, so tick "Account settings" when you sign in at `/mcp`.
+- **On by default with the plugin:** the card reminders (Claude Code hooks, only in a Sprintree project). **Opt-in:** agent runs (needs `SPRINTREE_RUNS_TOKEN`), live events (needs `/sprintree:connect`), `/claude` commands (needs `/sprintree:commands on`). See [On and off by default](#on-and-off-by-default).
 - **Tokens:** OAuth is the default, and your MCP client keeps the session in its own credential store. `/sprintree:connect` saves an `itns_` live-events token to `~/.config/sprintree/stream-token` (mode 0600) that only opens the event stream. Revoke it in Sprintree under Settings -> API & MCP -> Personal access tokens. A personal token lives in an environment variable, never in a config file or `.sprintree.json`, and is never printed.
 
 ## How it works
@@ -36,7 +36,7 @@ Model-independent.
 | Card reminders (Claude Code) | on, only in a Sprintree project | `export SPRINTREE_HOOKS=off` |
 | Agent runs (Claude Code) | off | `export SPRINTREE_RUNS_TOKEN=...` (an "Agent runs only" token) |
 | Live events (Claude Code) | off until you run `/sprintree:connect`; needs `"project": "KEY"` in `.sprintree.json` | revoke the token or disable the plugin |
-| `/claude` commands on cards | off | `SPRINTREE_COMMANDS` in your own `~/.claude/settings.json` |
+| `/claude` commands on cards | off | `/sprintree:commands on` in the session, or `default on` for all sessions without their own setting (`SPRINTREE_COMMANDS` is the older way) |
 
 ## What you get
 
@@ -168,14 +168,14 @@ replies, assignments and review requests to you, and `/claude ...` comments you 
 - **Permissions:** tick Account settings when the plugin signs in to Sprintree's MCP (`/mcp`, sprintree): `set_stream_focus` and `claim_stream_event` need the `mcp:account` scope. Without it `/claude` commands are not acted on. Both tools take the `session` id the monitor prints in its `connected` line.
 - **What you get:** lines with ids and enums only, never card text. The agent mentions what concerns its card, and acts on a `/claude`
   comment only when you wrote it. Without a token or a project the monitor prints nothing.
-- **`/claude` commands are off by default.** Turn them on in your user settings, `~/.claude/settings.json` (merge into the existing file), and restart the session:
+- **`/claude` commands are off by default.** Type this in the terminal, in the session:
+  - `/sprintree:commands on` or `off`: switch this session only, no restart (the monitor reconnects by itself and prints `sprintree-events /claude commands on`).
+  - `/sprintree:commands status`: shows what applies and whether the server confirmed it.
+  - `/sprintree:commands default on` or `off`: the setting for every session without its own setting, including running ones (they reconnect within seconds).
 
-  ```json
-  {"env": {"SPRINTREE_COMMANDS": "on"}}
-  ```
-
-  Put it in the user settings, not in a repository's committed `.claude/settings.json`. Why: anyone who gets into your Sprintree account could otherwise give work to your agent. While it is off, the `connected` line ends with `/claude commands off`.
-- **Where a `/claude` command goes:** to the session that has the issue in focus, or to the sessions named by `/claude @<label>` (with a space), else to every session and the first claim answers. It is not sent again to the other sessions, so set `SPRINTREE_COMMANDS` the same in every session. Every other line (status, mention, assignment, reply, review request) arrives either way.
+  The order is: this session, then the default, then `SPRINTREE_COMMANDS`, then off. The second way is `{"env": {"SPRINTREE_COMMANDS": "on"}}` in your own `~/.claude/settings.json` (merge into the existing file, restart the session, never a repository's committed `.claude/settings.json`). Why it is off: anyone who gets into your Sprintree account could otherwise give work to your agent. While it is off, the `connected` line ends with `/claude commands off`.
+- **Only you can turn it on.** The switch lives in the terminal on your machine. No MCP tool and no web setting can change it, so someone in your Sprintree account cannot turn it on. The agent does not turn it on either and tells you to type the command yourself.
+- **Where a `/claude` command goes:** to the session that has the issue in focus, or to the sessions named by `/claude @<label>` (with a space), else to every session and the first claim answers. If a command is addressed to a session that has commands off, it does not go to another session. That session prints a `skipped` line (`sprintree-events /claude command on KEY-12 skipped · /claude commands are off in this session`). With nobody addressed, sessions with commands off are skipped. Every other line (status, mention, assignment, reply, review request) arrives either way.
 - **Revoke:** delete the token in Sprintree Settings → API & MCP → Personal access tokens (starts with `itns_`) and remove the token file, or disable the plugin (`/plugin`).
 - Rules for the agent: [SKILL.md, "Live events (monitor)"](skills/sprintree/SKILL.md#live-events-monitor).
 

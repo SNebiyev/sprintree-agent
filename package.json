@@ -1,6 +1,6 @@
 {
   "name": "sprintree-agent",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Agent skill and MCP setup for working with Sprintree from Claude Code, Codex, Gemini CLI and other MCP-capable agents",
   "type": "module",
   "private": true,
