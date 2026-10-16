@@ -3,7 +3,8 @@
  * server they talk to, and what may be printed. Pure Node >= 18.7.0, no dependencies. The token is never printed; every line that
  * leaves these scripts goes through `safeLine`.
  */
-import { closeSync, fstatSync, openSync, readSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { closeSync, fstatSync, mkdirSync, openSync, readSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { scrub } from "./st.mjs";
@@ -11,11 +12,161 @@ import { scrub } from "./st.mjs";
 export const DEFAULT_URL = "https://sprintree.com";
 const TOKEN_RE = /^itns_[A-Za-z0-9_-]{20,}$/;
 
-/** The token file: ${XDG_CONFIG_HOME:-$HOME/.config}/sprintree/stream-token. */
-export function tokenFile(env = process.env) {
+/** The config directory: ${XDG_CONFIG_HOME:-$HOME/.config}/sprintree. */
+export function configDir(env = process.env) {
   const xdg = env.XDG_CONFIG_HOME;
   const base = xdg && path.isAbsolute(xdg) ? xdg : path.join(env.HOME || env.USERPROFILE || homedir(), ".config");
-  return path.join(base, "sprintree", "stream-token");
+  return path.join(base, "sprintree");
+}
+
+/** The token file: <configDir>/stream-token. */
+export function tokenFile(env = process.env) {
+  return path.join(configDir(env), "stream-token");
+}
+
+/** The UUID-shaped session id: a hash of the Claude Code session id (a resumed session keeps it), else random. */
+export function sessionId(env) {
+  const id = env.CLAUDE_CODE_SESSION_ID;
+  if (!id) return randomUUID();
+  const h = createHash("sha256").update(`sprintree-stream:${id}`).digest("hex");
+  const variant = ((parseInt(h[16], 16) & 0x3) | 0x8).toString(16);
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-5${h.slice(13, 16)}-${variant}${h.slice(17, 20)}-${h.slice(20, 32)}`;
+}
+
+/** The per-session commands setting: <configDir>/sessions/<hash>.json. Null without CLAUDE_CODE_SESSION_ID (a random id has no file). */
+export const sessionFile = (env = process.env) => (env.CLAUDE_CODE_SESSION_ID ? path.join(configDir(env), "sessions", `${sessionId(env)}.json`) : null);
+/** What the server last acknowledged for this session (written by the monitor): <configDir>/sessions/<hash>.ack. */
+export const ackFile = (env = process.env) => (env.CLAUDE_CODE_SESSION_ID ? path.join(configDir(env), "sessions", `${sessionId(env)}.ack`) : null);
+/** The default for every session: <configDir>/commands-default (one line, on or off). */
+export const defaultFile = (env = process.env) => path.join(configDir(env), "commands-default");
+
+/** True only when SPRINTREE_COMMANDS is on, 1 or true (any case, trimmed): /claude commands reach the session only then. */
+export function commandsOn(env) {
+  return ["on", "1", "true"].includes((env?.SPRINTREE_COMMANDS || "").trim().toLowerCase());
+}
+
+/** Writes `text` to `file` (directory 0700, file 0600) through a temp file in the same directory and a rename. Throws on failure. */
+export function writeAtomic(file, text) {
+  mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const tmp = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
+  try {
+    writeFileSync(tmp, text, { mode: 0o600 });
+    renameSync(tmp, file);
+  } catch (e) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // nothing to do
+    }
+    throw e;
+  }
+}
+
+/**
+ * Reads a small settings file. Returns null when it does not exist, else { text } or { loose: true } (a POSIX file readable or writable
+ * by group or others) or { bad: true } (not a regular file or unreadable).
+ */
+function readSmall(file, platform = process.platform) {
+  let fd;
+  try {
+    fd = openSync(file, "r");
+  } catch (e) {
+    return e?.code === "ENOENT" ? null : { bad: true };
+  }
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile()) return { bad: true };
+    if (platform !== "win32" && (st.mode & 0o077) !== 0) return { loose: true };
+    const buf = Buffer.alloc(512);
+    return { text: buf.subarray(0, readSync(fd, buf, 0, buf.length, 0)).toString("utf8") };
+  } catch {
+    return { bad: true };
+  } finally {
+    try {
+      closeSync(fd);
+    } catch {
+      // nothing to do
+    }
+  }
+}
+
+/** One layer: null (no file), or { value, reason? }. A loose or malformed file is { value: false, reason }, never a fall-through. */
+function layer(file, parse, platform) {
+  if (!file) return null;
+  const r = readSmall(file, platform);
+  if (r === null) return null;
+  if (r.loose) return { value: false, reason: "loose" };
+  if (r.bad) return { value: false, reason: "malformed" };
+  const v = parse(r.text);
+  return v === null ? { value: false, reason: "malformed" } : { value: v };
+}
+
+const onOff = (s) => (s === "on" ? true : s === "off" ? false : null);
+const parseSession = (text) => {
+  try {
+    return onOff(JSON.parse(text)?.commands);
+  } catch {
+    return null;
+  }
+};
+const parseDefault = (text) => onOff(text.split(/\r?\n/)[0].trim().toLowerCase());
+
+/** The three layers on their own: { session, default, env } (each null or { value, reason? }; env is { value, raw } when set). */
+export function readLayers(env = process.env, platform = process.platform) {
+  const raw = (env.SPRINTREE_COMMANDS || "").trim();
+  return {
+    session: layer(sessionFile(env), parseSession, platform),
+    default: layer(defaultFile(env), parseDefault, platform),
+    env: raw ? { value: commandsOn(env), raw } : null,
+  };
+}
+
+/**
+ * Whether /claude commands are on: the session file, else the default file, else SPRINTREE_COMMANDS, else off.
+ * { value: true|false, source: "session"|"default"|"env"|"none", reason?: "loose"|"malformed", ack? } where ack is "on", "off" or
+ * "unknown" (the server sent none) once the monitor has written one. Never throws.
+ */
+export function readCommandsState(env = process.env, platform = process.platform) {
+  const l = readLayers(env, platform);
+  const [source, hit] = l.session ? ["session", l.session] : l.default ? ["default", l.default] : l.env ? ["env", l.env] : ["none", { value: false }];
+  const state = { value: hit.value, source };
+  if (hit.reason) state.reason = hit.reason;
+  const a = readSmall(ackFile(env) ?? "", platform);
+  if (a?.text !== undefined) {
+    try {
+      const c = JSON.parse(a.text)?.commands;
+      state.ack = c === true ? "on" : c === false ? "off" : "unknown";
+    } catch {
+      // an unreadable ack counts as none
+    }
+  }
+  return state;
+}
+
+/**
+ * When the setting in force was written and when the monitor's ack was written, in ms (null when unknown): { setAt, ackAt }. setAt is the
+ * session file's `at` for a session setting, the default file's mtime for the default, null for SPRINTREE_COMMANDS or nothing. Never throws.
+ */
+export function readSettingTimes(env = process.env, platform = process.platform) {
+  const l = readLayers(env, platform);
+  const ms = (v) => {
+    const t = typeof v === "string" ? Date.parse(v) : NaN;
+    return Number.isNaN(t) ? null : t;
+  };
+  let setAt = null;
+  let ackAt = null;
+  try {
+    if (l.session) setAt = ms(JSON.parse(readSmall(sessionFile(env), platform)?.text)?.at);
+    else if (l.default) setAt = statSync(defaultFile(env)).mtimeMs;
+  } catch {
+    // no usable time: the caller then makes no claim
+  }
+  try {
+    ackAt = ms(JSON.parse(readSmall(ackFile(env) ?? "", platform)?.text)?.at);
+  } catch {
+    // none
+  }
+  return { setAt, ackAt };
 }
 
 /** The error code of a server answer: {"error":{"code"}} (the real envelope), else a flat {"code"} or {"error":"code"}. "" when there is none. */

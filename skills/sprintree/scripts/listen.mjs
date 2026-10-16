@@ -13,16 +13,18 @@
  * What is printed: ids and enums only. The stream is treated as hostile: a key, enum, id or handle is `[A-Za-z0-9_.:-]` and at most
  * 64 characters, a number a non-negative integer, a line at most 300 characters; a frame with an invalid required field prints
  * nothing. Control characters never reach the terminal and the token is never printed (safeLine = st.mjs's scrub).
- * `/claude` commands are opt-in on the local machine: without SPRINTREE_COMMANDS=on (set in the user's own ~/.claude/settings.json
- * `env`) a command frame, and the commands part of a summary, print nothing, so someone who takes over the Sprintree account cannot
- * hand work to this session. Status, notification and batch lines are unaffected.
+ * `/claude` commands are opt-in on the local machine: unless they are on (/sprintree:commands on for this session, or its default, or
+ * SPRINTREE_COMMANDS=on in the user's own ~/.claude/settings.json `env`; see readCommandsState) a command frame, and the commands part
+ * of a summary, print nothing, so someone who takes over the Sprintree account cannot hand work to this session. Status, notification
+ * and batch lines are unaffected. The setting is re-read when its file changes: the monitor then reconnects with the new
+ * X-Stream-Commands header (no restart) and writes what the server answered in hello to <session>.ack.
  * The session id sent is derived from CLAUDE_CODE_SESSION_ID (a hash: the raw id never leaves the machine).
  */
-import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
+import { lstatSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, utimesSync, watch } from "node:fs";
 import path from "node:path";
 import { isMainModule, resolveConfig } from "./st.mjs";
-import { baseUrl, errorCode, readToken, safeLine, secondMs } from "./stream-common.mjs";
+import { ackFile, baseUrl, configDir, defaultFile, errorCode, readCommandsState, readToken, safeLine, secondMs, sessionFile, sessionId, writeAtomic } from "./stream-common.mjs";
 
 const KEY_RE = /^[A-Z][A-Z0-9]{0,9}$/;
 const FIELD_RE = /^[A-Za-z0-9_.:-]{1,64}$/;
@@ -32,21 +34,15 @@ const IDLE_MS = 120_000; // no byte (not even a keep-alive comment) for this lon
 const BUFFER_MAX = 1024 * 1024;
 const DATA_MAX = 64 * 1024;
 const RETRY_AFTER_MAX_S = 300;
+const SESSION_FILE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(json|ack)$/;
+const DAY_MS = 24 * 3600 * 1000;
+const SESSION_FILE_MAX_AGE_MS = 30 * 24 * 3600 * 1000;
 const prefix = "sprintree-events";
 
 /** An id, enum or handle: the allowed characters only and at most 64 of them, else null. */
 export const field = (v) => (typeof v === "string" && FIELD_RE.test(v) ? v : null);
 /** A non-negative integer, else null. */
 export const count = (v) => (Number.isSafeInteger(v) && v >= 0 ? v : null);
-
-/** The UUID-shaped session id: a hash of the Claude Code session id (a resumed session keeps it), else random. */
-export function sessionId(env) {
-  const id = env.CLAUDE_CODE_SESSION_ID;
-  if (!id) return randomUUID();
-  const h = createHash("sha256").update(`sprintree-stream:${id}`).digest("hex");
-  const variant = ((parseInt(h[16], 16) & 0x3) | 0x8).toString(16);
-  return `${h.slice(0, 8)}-${h.slice(8, 12)}-5${h.slice(13, 16)}-${variant}${h.slice(17, 20)}-${h.slice(20, 32)}`;
-}
 
 /** A branch-like label: lower-case, [^a-z0-9._-] -> "-", 40 characters, "main" when there is nothing. */
 export const cleanLabel = (s) => String(s ?? "").toLowerCase().replace(/[^a-z0-9._-]/g, "-").slice(0, 40) || "main";
@@ -99,11 +95,6 @@ const by = (actor) => {
 };
 
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
-
-/** True only when SPRINTREE_COMMANDS is on, 1 or true (any case, trimmed): /claude commands reach the session only then. */
-export function commandsOn(env) {
-  return ["on", "1", "true"].includes((env?.SPRINTREE_COMMANDS || "").trim().toLowerCase());
-}
 
 /** The line for one `sprintree` frame (already parsed JSON), or null: unknown type, or a required field that is not valid. Commands print only with `commands: true` (the default is off, fail closed). */
 export function formatEvent(d, { commands = false } = {}) {
@@ -224,7 +215,33 @@ export async function main({ env = process.env, cwd = process.cwd(), write = (l)
   const sec = secondMs(env, "SPRINTREE_LISTEN_TEST_BACKOFF_MS", base.local);
   const session = sessionId(env);
   const label = labelOf(cwd);
-  const commands = commandsOn(env);
+  const sessFile = sessionFile(env);
+  const files = [sessFile, defaultFile(env)];
+  const sigOf = () =>
+    files
+      .map((f) => {
+        try {
+          const st = f ? statSync(f, { throwIfNoEntry: false }) : undefined;
+          return st ? `${st.ino}:${st.size}:${st.mtimeMs}:${st.mode}` : "-";
+        } catch {
+          return "err"; // EACCES and the like: readCommandsState reads an unreadable file as off
+        }
+      })
+      .join("|");
+  let sig = sigOf();
+  let state = readCommandsState(env);
+  /** The effective commands state, re-read only when a setting file changed (a cheap stat). */
+  const current = () => {
+    const s = sigOf();
+    if (s !== sig) {
+      sig = s;
+      state = readCommandsState(env);
+    }
+    return state;
+  };
+  let applied = state.value; // what the current (or next) connection announces in X-Stream-Commands
+  let connAbort = null; // aborts the connection in flight
+  let switching = false; // the abort is a commands change, not a failure
   const url = `${base.origin}/api/stream?project=${encodeURIComponent(project)}`;
 
   const ctl = new AbortController();
@@ -233,6 +250,29 @@ export async function main({ env = process.env, cwd = process.cwd(), write = (l)
   process.once("SIGTERM", stop);
   process.once("SIGINT", stop);
   process.stdout.on?.("error", stop); // the reader of our stdout is gone
+
+  setupSessionFiles();
+  const dirs = [path.join(configDir(env), "sessions"), configDir(env)];
+  const watchers = [];
+  for (const d of dirs) {
+    try {
+      mkdirSync(d, { recursive: true, mode: 0o700 });
+      const w = watch(d, { persistent: false }, () => check());
+      w.on("error", () => {});
+      watchers.push(w);
+    } catch {
+      // no watch here: the interval below still sees the change
+    }
+  }
+  let touchedAt = Date.now();
+  const poll = setInterval(() => {
+    check();
+    if (Date.now() - touchedAt > DAY_MS) {
+      touchedAt = Date.now();
+      touchOwn();
+    }
+  }, 2 * sec);
+  poll.unref?.();
 
   const repeated = dedupe(1000); // the server may re-send recent frames after a reconnect
   let lastId;
@@ -245,21 +285,97 @@ export async function main({ env = process.env, cwd = process.cwd(), write = (l)
     await loop();
   } finally {
     ctl.abort();
+    clearInterval(poll);
+    for (const w of watchers) w.close();
+  }
+
+  /** Refresh the own session file's mtime so the 30-day sweep (here and in other monitors) keeps a live or resumed session's setting. */
+  function touchOwn() {
+    if (!sessFile) return;
+    try {
+      const now = new Date();
+      utimesSync(sessFile, now, now);
+      sig = sigOf(); // an mtime-only change is not a setting change: no re-read
+    } catch {
+      // no session file (ENOENT) or not ours: nothing to keep
+    }
+  }
+
+  /** Delete own stale ack and session files older than 30 days (only files with the expected name). */
+  function setupSessionFiles() {
+    touchOwn(); // before the sweep; the own ack is removed just below and rewritten by the first hello
+    const own = ackFile(env);
+    try {
+      if (own) unlinkSync(own);
+    } catch {
+      // none yet
+    }
+    const dir = path.join(configDir(env), "sessions");
+    let names = [];
+    try {
+      names = readdirSync(dir);
+    } catch {
+      return;
+    }
+    for (const n of names) {
+      if (!SESSION_FILE_RE.test(n)) continue;
+      try {
+        const st = lstatSync(path.join(dir, n));
+        if (!st.isFile() || Date.now() - st.mtimeMs <= SESSION_FILE_MAX_AGE_MS) continue;
+        const f = path.join(dir, n);
+        // only a session file that reads cleanly as "on" is swept; an "off", a loose or a malformed one is kept (the reader
+        // counts them as off, and deleting would let the session fall back to the default)
+        if (n.endsWith(".json")) {
+          let on = false;
+          try {
+            on = st.size < 4096 && (process.platform === "win32" || (st.mode & 0o077) === 0) && JSON.parse(readFileSync(f, "utf8"))?.commands === "on";
+          } catch {
+            // unreadable or not JSON: keep it
+          }
+          if (!on) continue;
+        }
+        unlinkSync(f);
+      } catch {
+        // gone or not ours to delete
+      }
+    }
+  }
+
+  /** The setting may have changed: say so once, and have the connection in flight replaced (no backoff). */
+  function check() {
+    try {
+      const v = current().value;
+      if (v === applied) return;
+      applied = v;
+      out(`${prefix} /claude commands ${v ? "on" : "off"}`);
+      if (connAbort) {
+        switching = true;
+        connAbort();
+      }
+    } catch {
+      // a timer or watch callback must never throw out and kill the monitor
+    }
   }
 
   async function loop() {
     while (!ctl.signal.aborted) {
       let retryAfter = 0;
       let connectedAt = 0;
+      const conn = new AbortController();
+      const onStop = () => conn.abort();
+      ctl.signal.addEventListener("abort", onStop, { once: true });
       try {
+        check();
+        connAbort = () => conn.abort();
         const headers = {
           Authorization: `Bearer ${token}`,
           "X-Stream-Session": session,
           "X-Stream-Label": label,
+          "X-Stream-Commands": applied ? "on" : "off",
           Accept: "text/event-stream",
         };
         if (lastId !== undefined && HEADER_ID_RE.test(lastId)) headers["Last-Event-ID"] = lastId;
-        const res = await fetch(url, { headers, signal: ctl.signal, redirect: "manual" });
+        const res = await fetch(url, { headers, signal: conn.signal, redirect: "manual" });
         if (res.status !== 200) {
           const body = await readSmall(res);
           const ra = Number(res.headers.get("retry-after"));
@@ -298,8 +414,15 @@ export async function main({ env = process.env, cwd = process.cwd(), write = (l)
         }
       } catch {
         // network error, 5xx, 429, stream end or a broken stream: reconnect below (an abort ends the loop)
+      } finally {
+        connAbort = null;
+        ctl.signal.removeEventListener("abort", onStop);
       }
       if (ctl.signal.aborted) break;
+      if (switching) {
+        switching = false; // a commands change: reconnect at once, not a failure
+        continue;
+      }
       if (connectedAt && Date.now() - connectedAt > 60 * sec) backoff = sec;
       if (outageSince === null) outageSince = Date.now();
       if (!lostPrinted && Date.now() - outageSince > 60 * sec) {
@@ -321,9 +444,20 @@ export async function main({ env = process.env, cwd = process.cwd(), write = (l)
     }
     const [s, l, p] = [d?.session, d?.label, d?.project].map(field);
     if (s === null || l === null || p === null) return;
+    writeAck(d.commands);
     if (helloLabel === l) return; // a reconnect: nothing to say unless the label changed
     helloLabel = l;
-    out(`${prefix} connected · session=${s} · name=${l} · project=${p}${commands ? "" : " · /claude commands off"}`);
+    out(`${prefix} connected · session=${s} · name=${l} · project=${p}${current().value ? "" : " · /claude commands off"}`);
+  }
+  /** What the server said it knows: true, false or null (an older server). Only for a session with an id. */
+  function writeAck(c) {
+    const file = ackFile(env);
+    if (!file) return;
+    try {
+      writeAtomic(file, JSON.stringify({ commands: c === true ? true : c === false ? false : null, at: new Date().toISOString() }));
+    } catch {
+      // the status line then says the monitor has not confirmed
+    }
   }
   function frame(data) {
     let d;
@@ -332,7 +466,13 @@ export async function main({ env = process.env, cwd = process.cwd(), write = (l)
     } catch {
       return;
     }
-    const line = formatEvent(d, { commands });
+    if (d?.type === "command_skipped") {
+      const [issue, ev] = [d.issue, d.ev].map(field);
+      if (issue === null || ev === null || repeated(`command_skipped:${ev}`)) return;
+      out(`${prefix} /claude command on ${issue} skipped · /claude commands are off in this session`);
+      return;
+    }
+    const line = formatEvent(d, { commands: current().value });
     if (!line) return;
     if ((d.type === "status" || d.type === "notification" || d.type === "command") && repeated(`${d.type}:${d.ev}`)) return;
     out(line);

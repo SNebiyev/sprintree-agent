@@ -1,12 +1,13 @@
 // listen.mjs, the live-events monitor, against a fake server on 127.0.0.1 (port 0). Each test spawns the script as Claude Code would.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import path from "node:path";
 import test from "node:test";
 import { BODY, ROOT, childEnv, tmpDir } from "../test-support/helpers.mjs";
-import { commandsOn, dedupe, formatEvent, projectOf, sessionId, sseParser } from "../skills/sprintree/scripts/listen.mjs";
+import { dedupe, formatEvent, projectOf, sseParser } from "../skills/sprintree/scripts/listen.mjs";
+import { ackFile, commandsOn, defaultFile, sessionFile, sessionId } from "../skills/sprintree/scripts/stream-common.mjs";
 
 const SCRIPT = path.join(ROOT, "skills", "sprintree", "scripts", "listen.mjs");
 const TOKEN = `itns_${BODY}`;
@@ -507,4 +508,283 @@ test("commandsOn and formatEvent({ commands })", () => {
   assert.ok(formatEvent({ type: "summary", mentions: 1, status: 0, commands: 2 }, { commands: true }).endsWith("2 /claude commands"));
   const st = { type: "status", issue: "SPD-1", from: "a", to: "b", actor: "x", ev: "e" };
   assert.equal(formatEvent(st, { commands: false }), formatEvent(st));
+});
+
+// --- per-session /claude commands (SPD-1360): the setting files, the reconnect on change, command_skipped, the ack ---
+
+const SID = "sess-1360";
+/** A config directory of its own (so a test can prepare files before the monitor starts) and the env that points the monitor at it. */
+function cfgEnv(extra = {}) {
+  const cfg = path.join(tmpDir("sa-listen-cfg-"), "cfg");
+  const env = { XDG_CONFIG_HOME: cfg, CLAUDE_CODE_SESSION_ID: SID };
+  return { cfg, env: { ...env, ...extra }, sess: sessionFile(env), def: defaultFile(env), ack: ackFile(env) };
+}
+const put = (file, text) => {
+  mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  writeFileSync(file, text, { mode: 0o600 });
+};
+const setSession = (file, v) => put(file, JSON.stringify({ commands: v, at: new Date().toISOString() }));
+const waitFor = async (cond, ms = 8000) => {
+  const stop = Date.now() + ms;
+  while (!cond()) {
+    if (Date.now() > stop) throw new Error("timed out");
+    await new Promise((r) => setTimeout(r, 20));
+  }
+};
+const CMD = { type: "command", issue: "SPD-1", comment: "c1" };
+
+test("toggling the session file reconnects without a restart: the new connect carries X-Stream-Commands and Last-Event-ID, one line says what changed, the command frames follow the switch", { skip: !posix }, async () => {
+  const c = cfgEnv();
+  setSession(c.sess, "off");
+  const srv = await fake((req, res, n) => sse(res, frame("hello", HELLO, `h${n}`), frame("sprintree", { ...CMD, ev: `e${n}` }, `c${n}`)));
+  const p = start(srv.url, c.env);
+  try {
+    await p.until(1);
+    assert.equal(p.lines[0], `${CONNECTED} · /claude commands off`);
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(srv.requests.length, 1, "no reconnect without a change");
+    setSession(c.sess, "on");
+    await p.until(3);
+    assert.deepEqual(p.lines.slice(1), ["sprintree-events /claude commands on", "SPD-1 · /claude command · comment=c1 · ev=e2"]);
+    assert.equal(srv.requests.length, 2);
+    assert.deepEqual(srv.requests.map((r) => r.headers["x-stream-commands"]), ["off", "on"]);
+    assert.equal(srv.requests[1].headers["last-event-id"], "c1");
+    setSession(c.sess, "off");
+    await p.until(4);
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(p.lines[3], "sprintree-events /claude commands off");
+    assert.equal(p.lines.length, 4, "the command frame of the third connection is not printed");
+    assert.deepEqual(srv.requests.map((r) => r.headers["x-stream-commands"]), ["off", "on", "off"]);
+    assert.equal(srv.requests[2].headers["last-event-id"], "c2");
+    assert.equal(srv.requests.length, 3, "a switch is not a failure: no backoff loop");
+  } finally {
+    await p.quit();
+    await srv.close();
+  }
+});
+
+test("a session file written after the monitor started (no file at start) is picked up; deleting it falls back to off", { skip: !posix }, async () => {
+  const c = cfgEnv();
+  const srv = await fake((req, res) => sse(res, frame("hello", HELLO, "h")));
+  const p = start(srv.url, c.env);
+  try {
+    await p.until(1);
+    setSession(c.sess, "on");
+    await p.until(2);
+    assert.equal(p.lines[1], "sprintree-events /claude commands on");
+    await waitFor(() => srv.requests.length === 2);
+    assert.equal(srv.requests[1].headers["x-stream-commands"], "on");
+    unlinkSync(c.sess);
+    await p.until(3);
+    assert.equal(p.lines[2], "sprintree-events /claude commands off");
+    await waitFor(() => srv.requests.length === 3);
+    assert.equal(srv.requests[2].headers["x-stream-commands"], "off");
+  } finally {
+    await p.quit();
+    await srv.close();
+  }
+});
+
+test("the default file beats SPRINTREE_COMMANDS and sets the header; the session file beats the default", { skip: !posix }, async () => {
+  const c = cfgEnv({ SPRINTREE_COMMANDS: "on" });
+  put(c.def, "off\n");
+  const srv = await fake((req, res) => sse(res, frame("hello", HELLO, "h"), frame("sprintree", { ...CMD, ev: "e1" }, "c1")));
+  const p = start(srv.url, c.env);
+  try {
+    await p.until(1);
+    await new Promise((r) => setTimeout(r, 200));
+    assert.deepEqual(p.lines, [`${CONNECTED} · /claude commands off`], "env says on, the default says off: the command is not printed");
+    assert.equal(srv.requests[0].headers["x-stream-commands"], "off");
+    setSession(c.sess, "on");
+    await p.until(3);
+    assert.equal(p.lines[2], "SPD-1 · /claude command · comment=c1 · ev=e1");
+    assert.equal(srv.requests[1].headers["x-stream-commands"], "on");
+  } finally {
+    await p.quit();
+    await srv.close();
+  }
+});
+
+test("without any file SPRINTREE_COMMANDS still works and is sent as the header", async () => {
+  for (const [v, h] of [["on", "on"], ["", "off"]]) {
+    const c = cfgEnv({ SPRINTREE_COMMANDS: v });
+    const srv = await fake((req, res) => sse(res, frame("hello", HELLO, "h")));
+    const p = start(srv.url, c.env);
+    try {
+      await p.until(1);
+      assert.equal(srv.requests[0].headers["x-stream-commands"], h);
+    } finally {
+      await p.quit();
+      await srv.close();
+    }
+  }
+});
+
+test("an old server (no commands in hello, ignores the header) that still sends commands: off hides the command and the commands part of a summary", { skip: !posix }, async () => {
+  const c = cfgEnv({ SPRINTREE_COMMANDS: "on" });
+  setSession(c.sess, "off");
+  const srv = await fake((req, res) => sse(res, frame("hello", HELLO, 1), frame("sprintree", { ...CMD, ev: "e1" }, 2), frame("sprintree", { type: "summary", mentions: 0, status: 0, commands: 3 }, 3), frame("sprintree", { type: "batch", count: 2, to: "done", actor: "x" }, 4)));
+  const p = start(srv.url, c.env);
+  try {
+    await p.until(2);
+    await new Promise((r) => setTimeout(r, 200));
+    assert.deepEqual(p.lines, [`${CONNECTED} · /claude commands off`, "2 cards → done · @x"]);
+    await waitFor(() => existsSync(c.ack));
+    assert.equal(JSON.parse(readFileSync(c.ack, "utf8")).commands, null, "an old server sends no value: the ack says null");
+  } finally {
+    await p.quit();
+    await srv.close();
+  }
+});
+
+test("hello commands is written to the ack file (0600) every time, a stale ack of an earlier run is removed at start", { skip: !posix }, async () => {
+  const c = cfgEnv();
+  put(c.ack, JSON.stringify({ commands: false }));
+  let staleAtConnect = null;
+  const srv = await fake((req, res, n) => {
+    if (n === 1) staleAtConnect = existsSync(c.ack);
+    sse(res, frame("hello", { ...HELLO, commands: n === 1 }, `h${n}`));
+  });
+  const p = start(srv.url, c.env);
+  try {
+    await p.until(1);
+    assert.equal(staleAtConnect, false, "the stale ack is gone before the first connect");
+    await waitFor(() => existsSync(c.ack) && JSON.parse(readFileSync(c.ack, "utf8")).commands === true);
+    assert.equal(statSync(c.ack).mode & 0o777, 0o600);
+    setSession(c.sess, "on");
+    await waitFor(() => srv.requests.length === 2 && JSON.parse(readFileSync(c.ack, "utf8")).commands === false);
+    assert.ok(!readFileSync(c.ack, "utf8").includes(TOKEN));
+  } finally {
+    await p.quit();
+    await srv.close();
+  }
+});
+
+test("a command_skipped frame prints one fixed line with the key, no comment text; the key goes through safeLine and a bad one is dropped", async () => {
+  const c = cfgEnv();
+  const srv = await fake((req, res) =>
+    sse(
+      res,
+      frame("hello", HELLO, 1),
+      frame("sprintree", { type: "command_skipped", issue: "SPD-7", ev: "k1", comment: "secret text" }, 2),
+      frame("sprintree", { type: "command_skipped", issue: "SPD-7", ev: "k1" }, 3),
+      frame("sprintree", { type: "command_skipped", issue: TOKEN, ev: "k2" }, 4),
+      frame("sprintree", { type: "command_skipped", issue: "SPD-8\nSPD-9", ev: "k3" }, 5),
+      frame("sprintree", { type: "command_skipped", ev: "k4" }, 6)
+    )
+  );
+  const p = start(srv.url, c.env);
+  try {
+    await p.until(3);
+    await new Promise((r) => setTimeout(r, 200));
+    const tail = " skipped · /claude commands are off in this session";
+    assert.deepEqual(p.lines.slice(1), [`sprintree-events /claude command on SPD-7${tail}`, `sprintree-events /claude command on [token]${tail}`]);
+    assert.ok(!p.lines.join("\n").includes("secret") && !p.lines.join("\n").includes(BODY));
+  } finally {
+    await p.quit();
+    await srv.close();
+  }
+});
+
+test("at start, files older than 30 days with the session-file name are deleted; other names and recent files stay", { skip: !posix }, async () => {
+  const c = cfgEnv();
+  const dir = path.dirname(c.sess);
+  const old = path.join(dir, "11111111-2222-5333-8444-555555555555.json");
+  const oldAck = path.join(dir, "11111111-2222-5333-8444-555555555555.ack");
+  const fresh = path.join(dir, "aaaaaaaa-2222-5333-8444-555555555555.json");
+  const other = path.join(dir, "notes.json");
+  for (const f of [old, fresh]) put(f, '{"commands":"on"}');
+  for (const f of [oldAck, other]) put(f, "{}");
+  const past = new Date(Date.now() - 31 * 24 * 3600 * 1000);
+  const offOld = path.join(dir, "bbbbbbbb-2222-5333-8444-555555555555.json");
+  put(offOld, '{"commands":"off"}');
+  for (const f of [old, oldAck, other, offOld]) utimesSync(f, past, past);
+  const srv = await fake((req, res) => sse(res, frame("hello", HELLO, "h")));
+  const p = start(srv.url, c.env);
+  try {
+    await p.until(1);
+    assert.deepEqual([old, oldAck, fresh, other, offOld].map(existsSync), [false, false, true, true, true]);
+  } finally {
+    await p.quit();
+    await srv.close();
+  }
+});
+
+test("a loose session file turns commands off in the monitor too (no fall-through to env)", { skip: !posix }, async () => {
+  const c = cfgEnv({ SPRINTREE_COMMANDS: "on" });
+  setSession(c.sess, "on");
+  chmodSync(c.sess, 0o644);
+  const srv = await fake((req, res) => sse(res, frame("hello", HELLO, "h"), frame("sprintree", { ...CMD, ev: "e1" }, "c1")));
+  const p = start(srv.url, c.env);
+  try {
+    await p.until(1);
+    await new Promise((r) => setTimeout(r, 200));
+    assert.deepEqual(p.lines, [`${CONNECTED} · /claude commands off`]);
+    assert.equal(srv.requests[0].headers["x-stream-commands"], "off");
+  } finally {
+    await p.quit();
+    await srv.close();
+  }
+});
+
+test("the sweep keeps an old session file that is loose, malformed or unreadable as JSON, and still deletes an old clean on", { skip: !posix }, async () => {
+  const c = cfgEnv();
+  const dir = path.dirname(c.sess);
+  const name = (x) => path.join(dir, `${x.repeat(8)}-2222-5333-8444-555555555555.json`);
+  const [loose, bad, notObj, on] = [name("c"), name("d"), name("e"), name("f")];
+  put(loose, '{"commands":"on"}');
+  chmodSync(loose, 0o644);
+  put(bad, "{not json");
+  put(notObj, "null");
+  put(on, '{"commands":"on"}');
+  const past = new Date(Date.now() - 31 * 24 * 3600 * 1000);
+  for (const f of [loose, bad, notObj, on]) utimesSync(f, past, past);
+  const srv = await fake((req, res) => sse(res, frame("hello", HELLO, "h")));
+  const p = start(srv.url, c.env);
+  try {
+    await p.until(1);
+    assert.deepEqual([loose, bad, notObj, on].map(existsSync), [true, true, true, false]);
+  } finally {
+    await p.quit();
+    await srv.close();
+  }
+});
+
+test("at start the own session file's mtime is refreshed, so a setting turned on 31+ days ago survives, and the refresh does not reconnect", { skip: !posix }, async () => {
+  const c = cfgEnv();
+  setSession(c.sess, "on");
+  const past = new Date(Date.now() - 31 * 24 * 3600 * 1000);
+  utimesSync(c.sess, past, past);
+  const srv = await fake((req, res) => sse(res, frame("hello", HELLO, "h")));
+  const p = start(srv.url, c.env);
+  try {
+    await p.until(1);
+    await new Promise((r) => setTimeout(r, 300));
+    assert.ok(existsSync(c.sess));
+    assert.ok(Date.now() - statSync(c.sess).mtimeMs < 60_000, "mtime refreshed");
+    assert.equal(srv.requests.length, 1, "no reconnect");
+    assert.deepEqual(p.lines, [CONNECTED]);
+  } finally {
+    await p.quit();
+    await srv.close();
+  }
+});
+
+test("a stat error on the session directory (EACCES) reads as off and does not kill the monitor", { skip: !posix || process.getuid?.() === 0 }, async () => {
+  const c = cfgEnv();
+  setSession(c.sess, "on");
+  const dir = path.dirname(c.sess);
+  const srv = await fake((req, res) => sse(res, frame("hello", HELLO, "h")));
+  const p = start(srv.url, c.env);
+  try {
+    await p.until(1);
+    chmodSync(dir, 0o000);
+    await p.until(2);
+    assert.equal(p.lines[1], "sprintree-events /claude commands off");
+    assert.equal(p.child.exitCode, null, "the monitor is still running");
+  } finally {
+    chmodSync(dir, 0o700);
+    await p.quit();
+    await srv.close();
+  }
 });
