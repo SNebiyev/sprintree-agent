@@ -13,6 +13,9 @@
  * What is printed: ids and enums only. The stream is treated as hostile: a key, enum, id or handle is `[A-Za-z0-9_.:-]` and at most
  * 64 characters, a number a non-negative integer, a line at most 300 characters; a frame with an invalid required field prints
  * nothing. Control characters never reach the terminal and the token is never printed (safeLine = st.mjs's scrub).
+ * `/claude` commands are opt-in on the local machine: without SPRINTREE_COMMANDS=on (set in the user's own ~/.claude/settings.json
+ * `env`) a command frame, and the commands part of a summary, print nothing, so someone who takes over the Sprintree account cannot
+ * hand work to this session. Status, notification and batch lines are unaffected.
  * The session id sent is derived from CLAUDE_CODE_SESSION_ID (a hash: the raw id never leaves the machine).
  */
 import { createHash, randomUUID } from "node:crypto";
@@ -97,8 +100,13 @@ const by = (actor) => {
 
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
-/** The line for one `sprintree` frame (already parsed JSON), or null: unknown type, or a required field that is not valid. */
-export function formatEvent(d) {
+/** True only when SPRINTREE_COMMANDS is on, 1 or true (any case, trimmed): /claude commands reach the session only then. */
+export function commandsOn(env) {
+  return ["on", "1", "true"].includes((env?.SPRINTREE_COMMANDS || "").trim().toLowerCase());
+}
+
+/** The line for one `sprintree` frame (already parsed JSON), or null: unknown type, or a required field that is not valid. Commands print only with `commands: true` (the default is off, fail closed). */
+export function formatEvent(d, { commands = false } = {}) {
   if (!d || typeof d !== "object" || Array.isArray(d)) return null;
   const tail = d.claim === true ? " · claim first" : "";
   let s = null;
@@ -120,6 +128,7 @@ export function formatEvent(d) {
       break;
     }
     case "command": {
+      if (!commands) return null;
       const [issue, comment, ev] = [d.issue, d.comment, d.ev].map(field);
       if ([issue, comment, ev].includes(null)) return null;
       s = `${issue} · /claude command · comment=${comment} · ev=${ev}`;
@@ -138,7 +147,7 @@ export function formatEvent(d) {
       const parts = [];
       if (m) parts.push(`${plural(m, "notification", "notifications")} (mentions, replies, assignments, reviews)`);
       if (st) parts.push(plural(st, "status change", "status changes"));
-      if (c) parts.push(plural(c, "/claude command", "/claude commands"));
+      if (c && commands) parts.push(plural(c, "/claude command", "/claude commands"));
       return parts.length ? `while you were away: ${parts.join(", ")}`.slice(0, LINE_MAX) : null;
     }
     default:
@@ -215,6 +224,7 @@ export async function main({ env = process.env, cwd = process.cwd(), write = (l)
   const sec = secondMs(env, "SPRINTREE_LISTEN_TEST_BACKOFF_MS", base.local);
   const session = sessionId(env);
   const label = labelOf(cwd);
+  const commands = commandsOn(env);
   const url = `${base.origin}/api/stream?project=${encodeURIComponent(project)}`;
 
   const ctl = new AbortController();
@@ -313,7 +323,7 @@ export async function main({ env = process.env, cwd = process.cwd(), write = (l)
     if (s === null || l === null || p === null) return;
     if (helloLabel === l) return; // a reconnect: nothing to say unless the label changed
     helloLabel = l;
-    out(`${prefix} connected · session=${s} · name=${l} · project=${p}`);
+    out(`${prefix} connected · session=${s} · name=${l} · project=${p}${commands ? "" : " · /claude commands off"}`);
   }
   function frame(data) {
     let d;
@@ -322,7 +332,7 @@ export async function main({ env = process.env, cwd = process.cwd(), write = (l)
     } catch {
       return;
     }
-    const line = formatEvent(d);
+    const line = formatEvent(d, { commands });
     if (!line) return;
     if ((d.type === "status" || d.type === "notification" || d.type === "command") && repeated(`${d.type}:${d.ev}`)) return;
     out(line);
