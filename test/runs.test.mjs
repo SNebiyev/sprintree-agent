@@ -2,8 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import http from "node:http";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { main, merged, runsEnv, where } from "../skills/sprintree/scripts/runs.mjs";
-import { tmpDir, reply, mockFetch, ROOT, BODY } from "../test-support/helpers.mjs";
+import { tmpDir, reply, mockFetch, childEnv, ROOT, BODY } from "../test-support/helpers.mjs";
 
 const TOKEN = `itnh_${BODY}`;
 const RUN = "11111111-2222-3333-4444-555555555555";
@@ -44,7 +47,7 @@ async function hook(input, { fetch, dir = tmpDir("runs-"), now = 1_000_000, toke
   const env = { SPRINTREE_RUNS_TOKEN: token, CLAUDE_PROJECT_DIR: path.join(dir, "my-repo") };
   const out = [];
   const err = [];
-  const code = await main(["hook"], { env, home: dir, fetch, stdin: JSON.stringify(input), out: (s) => out.push(s), err: (s) => err.push(s), now: () => now, ...(budget ? { hookBudgetMs: budget } : {}) });
+  const code = await main(["hook"], { env, home: dir, fetch, stdin: JSON.stringify(input), out: (s) => out.push(s), err: (s) => err.push(s), now: () => now, hookBudgetMs: budget });
   return { code, out: out.join("\n"), err: err.join("\n"), dir, env };
 }
 
@@ -454,4 +457,72 @@ test("a hook ends within its budget on a server that never answers and writes th
   const again = await hook({ hook_event_name: "UserPromptSubmit", session_id: "S" }, { fetch: hang, dir, now: 101_000, budget: 200 });
   assert.equal(again.out, "");
   assert.equal(calls, 1, "the next hook makes no request");
+});
+
+/** Runs `runs.mjs hook` as a real process against a local HTTP server; `answer(body, res)` is called per request (never answering = hang). */
+async function hookProcess(input, answer, dir) {
+  const sockets = new Set();
+  const srv = http.createServer((req, res) => {
+    let raw = "";
+    req.on("data", (c) => (raw += c));
+    req.on("end", () => answer(JSON.parse(raw || "{}"), res));
+  });
+  srv.on("connection", (s) => (sockets.add(s), s.on("close", () => sockets.delete(s))));
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  const script = fileURLToPath(new URL("../skills/sprintree/scripts/runs.mjs", import.meta.url));
+  const env = childEnv({
+    HOME: dir,
+    USERPROFILE: dir,
+    SPRINTREE_RUNS_TOKEN: TOKEN,
+    SPRINTREE_MCP_URL: `http://127.0.0.1:${srv.address().port}/mcp`,
+    CLAUDE_PROJECT_DIR: path.join(dir, "my-repo"),
+  });
+  const child = spawn(process.execPath, [script, "hook"], { env, stdio: ["pipe", "pipe", "pipe"] });
+  try {
+    let stdout = "";
+    child.stdout.on("data", (c) => (stdout += c));
+    const t0 = Date.now();
+    const code = await new Promise((resolve, reject) => {
+      child.on("error", reject);
+      child.on("close", resolve);
+      child.stdin.end(JSON.stringify(input));
+    });
+    return { code, ms: Date.now() - t0, stdout, env };
+  } finally {
+    child.kill();
+    sockets.forEach((s) => s.destroy());
+    srv.close();
+  }
+}
+
+/** A fake server over HTTP: initialize, the notice and a get_run of an open run. */
+function answerRun(b, res) {
+  const result = b.method === "initialize" ? { protocolVersion: "2025-06-18" } : b.method === "tools/call" ? {
+    content: [{ type: "text", text: "ok" }],
+    structuredContent: { run: { id: RUN, label: "repo", status: "open", version: 6, lanes: 1, counts: { running: 1 } }, lanes: [{ agent: "a1", status: "running" }] },
+  } : {};
+  res.setHeader("content-type", "application/json");
+  res.end(JSON.stringify({ jsonrpc: "2.0", id: b.id, result }));
+}
+
+test("run as a process, a hook ends within the budget on a slow server and writes the backoff (SPD-1395)", { timeout: 15000 }, async () => {
+  const dir = tmpDir("runs-");
+  const seeded = await hook({ hook_event_name: "SubagentStart", agent_id: "a1" }, { fetch: server().fetch, dir, now: Date.now() });
+  // every request answers after 1.9 s, just inside the 2 s request timeout: initialize, the initialized notice and get_run
+  // take 5.7 s together, so only the 5 s budget (not a request timeout) ends this hook
+  const slow = (body, res) => setTimeout(() => answerRun(body, res), 1900).unref();
+  const r = await hookProcess({ hook_event_name: "UserPromptSubmit", session_id: "S" }, slow, dir);
+  assert.equal(r.code, 0);
+  assert.ok(r.ms < 6500, `took ${r.ms} ms`);
+  const until = stateOf(seeded).state.unsupportedUntil;
+  assert.ok(until > Date.now() + 200_000 && until <= Date.now() + 300_000, "the 5-minute backoff is written");
+});
+
+test("run as a process, a hook still prints its line when the server answers (SPD-1395)", { timeout: 15000 }, async () => {
+  const dir = tmpDir("runs-");
+  const seeded = await hook({ hook_event_name: "SubagentStart", agent_id: "a1" }, { fetch: server().fetch, dir, now: Date.now() });
+  const r = await hookProcess({ hook_event_name: "SessionStart", session_id: "S" }, answerRun, dir);
+  assert.equal(r.code, 0);
+  assert.ok(r.stdout.trim().length > 0, "the hook's line reaches stdout");
+  assert.equal(stateOf(seeded).state.unsupportedUntil, undefined);
 });
