@@ -302,21 +302,32 @@ test("the /claude commands switch: the README leads with /sprintree:commands, SK
 
 // A slash command's `allowed-tools` lets the model run what it names for that turn without a prompt (SPD-1363): only the exact script of this plugin may be named, never a broad prefix like `node:*`.
 const COMMAND_BASH_RULE = /^Bash\(node "\$\{CLAUDE_PLUGIN_ROOT\}\/skills\/sprintree\/scripts\/[a-z][\w-]*\.mjs"(?: \*)?\)$/;
-export const commandRuleProblems = (md) => {
-  const line = md.match(/^allowed-tools:[ \t]*(.*)$/m)?.[1];
+const commandRuleProblems = (md) => {
+  let line = md.match(/^allowed-tools:[ \t]*(.*)$/m)?.[1];
   if (line === undefined) return [];
+  if (!line.trim()) {
+    // YAML block list: the indented `- item` lines after the key are the rules
+    const items = [...md.matchAll(/^allowed-tools:[ \t]*\r?\n((?:[ \t]+-[^\n]*\n?)+)/gm)].flatMap((m) => m[1].split("\n").map((l) => l.replace(/^[ \t]+-[ \t]*/, "").trim().replace(/^(["'])(.*)\1$/, "$2")).filter(Boolean));
+    if (!items.length) return ["allowed-tools: (empty)"];
+    line = items.join(",");
+  }
   // split on top-level commas only (a rule may hold quoted text); every item must be a Bash rule naming a concrete script
   const rules = line.match(/(?:[^,(]|\([^)]*\))+/g)?.map((r) => r.trim()).filter(Boolean) ?? [];
   return rules.filter((r) => !COMMAND_BASH_RULE.test(r));
 };
 
 test("commands/*.md allowed-tools name an exact plugin script, never a broad Bash prefix", () => {
-  for (const bad of ["Bash(node:*)", "Bash(node *)", "Bash(*)", "Bash", "Bash(node:*), Bash(ls)", 'Bash(node "${CLAUDE_PLUGIN_ROOT}/skills/sprintree/scripts/x.mjs"; rm -rf *)']) {
+  for (const bad of ["Bash(node:*)", "Bash(node *)", "Bash(*)", "Bash", "Bash(node:*), Bash(ls)", "[Bash(node:*)]", 'Bash(node "${CLAUDE_PLUGIN_ROOT}/skills/sprintree/scripts/x.mjs"; rm -rf *)']) {
     assert.notDeepEqual(commandRuleProblems(`---\nallowed-tools: ${bad}\n---\n`), [], bad);
+  }
+  for (const bad of ["---\nallowed-tools:\n  - Bash(node:*)\n---\n", "---\nallowed-tools:\n---\n"]) {
+    assert.notDeepEqual(commandRuleProblems(bad), [], bad);
   }
   for (const ok of ['Bash(node "${CLAUDE_PLUGIN_ROOT}/skills/sprintree/scripts/connect.mjs")', 'Bash(node "${CLAUDE_PLUGIN_ROOT}/skills/sprintree/scripts/commands.mjs" *)']) {
     assert.deepEqual(commandRuleProblems(`---\nallowed-tools: ${ok}\n---\n`), [], ok);
   }
+  const okBlock = '---\nallowed-tools:\n  - Bash(node "${CLAUDE_PLUGIN_ROOT}/skills/sprintree/scripts/connect.mjs")\n---\n';
+  assert.deepEqual(commandRuleProblems(okBlock), [], okBlock);
   const dir = path.join(ROOT, "commands");
   const files = readdirSync(dir).filter((f) => f.endsWith(".md"));
   assert.ok(files.length >= 2);
