@@ -105,8 +105,8 @@ export function commandsOn(env) {
   return ["on", "1", "true"].includes((env?.SPRINTREE_COMMANDS || "").trim().toLowerCase());
 }
 
-/** The line for one `sprintree` frame (already parsed JSON), or null: unknown type, or a required field that is not valid. With `commands: false` a command prints nothing. */
-export function formatEvent(d, { commands = true } = {}) {
+/** The line for one `sprintree` frame (already parsed JSON), or null: unknown type, or a required field that is not valid. Commands print only with `commands: true` (the default is off, fail closed). */
+export function formatEvent(d, { commands = false } = {}) {
   if (!d || typeof d !== "object" || Array.isArray(d)) return null;
   const tail = d.claim === true ? " · claim first" : "";
   let s = null;

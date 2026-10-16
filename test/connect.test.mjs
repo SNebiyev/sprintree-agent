@@ -92,7 +92,7 @@ test("an existing token file is replaced, and the output says so and points at r
   const home = tmpDir("sa-connect-");
   const dir = path.join(home, "cfg", "sprintree");
   mkdirSync(dir, { recursive: true });
-  writeFileSync(path.join(dir, "stream-token"), "itns_old_old_old_old_old_old_old\n");
+  writeFileSync(path.join(dir, "stream-token"), "itns_old-token\n");
   const srv = await fake([[200, { token: TOKEN }]]);
   try {
     const r = await run(srv, { home });

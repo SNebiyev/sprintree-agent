@@ -150,7 +150,7 @@ test("hostile fields: an escape sequence, a newline, a wrong character or an ove
   const srv = await fake((req, res) =>
     sse(res, frame("hello", HELLO), ...bad.map((b) => frame("sprintree", b)), frame("sprintree", { type: "batch", count: 2, to: "done", actor: "ok" }), frame("sprintree", { type: "status", issue: "A".repeat(64), from: "a", to: "b", actor: "x", ev: "e", claim: "yes" }))
   );
-  const p = start(srv.url);
+  const p = start(srv.url, { SPRINTREE_COMMANDS: "on" });
   try {
     await p.until(3);
     assert.equal(p.lines[1], "2 cards → done · @ok");
@@ -166,7 +166,7 @@ test("hostile fields: an escape sequence, a newline, a wrong character or an ove
 
 test("a token inside a field is hidden, and the token is never printed or logged", async () => {
   const srv = await fake((req, res) => sse(res, frame("hello", HELLO), frame("sprintree", { type: "notification", kind: "mention", issue: TOKEN, actor: "x", ev: "e" })));
-  const p = start(srv.url);
+  const p = start(srv.url, { SPRINTREE_COMMANDS: "on" });
   try {
     await p.until(2);
     assert.ok(p.lines[1].includes("[token]"), p.lines[1]);
@@ -499,10 +499,12 @@ test("commandsOn and formatEvent({ commands })", () => {
   assert.equal(commandsOn({ SPRINTREE_COMMANDS: "yes" }), false);
   const cmd = { type: "command", issue: "SPD-1", comment: "c1", ev: "e1" };
   assert.equal(formatEvent(cmd, { commands: false }), null);
-  assert.ok(formatEvent(cmd).includes("/claude command"));
+  assert.ok(formatEvent(cmd, { commands: true }).includes("/claude command"));
+  assert.equal(formatEvent(cmd), null, "no options: fail closed, a command frame is dropped");
+  assert.equal(formatEvent(cmd, {}), null);
   assert.equal(formatEvent({ type: "summary", mentions: 0, status: 0, commands: 2 }, { commands: false }), null);
   assert.equal(formatEvent({ type: "summary", mentions: 1, status: 0, commands: 2 }, { commands: false }), `${NOTES.replace("2 notifications", "1 notification")}`);
-  assert.ok(formatEvent({ type: "summary", mentions: 1, status: 0, commands: 2 }).endsWith("2 /claude commands"));
+  assert.ok(formatEvent({ type: "summary", mentions: 1, status: 0, commands: 2 }, { commands: true }).endsWith("2 /claude commands"));
   const st = { type: "status", issue: "SPD-1", from: "a", to: "b", actor: "x", ev: "e" };
   assert.equal(formatEvent(st, { commands: false }), formatEvent(st));
 });

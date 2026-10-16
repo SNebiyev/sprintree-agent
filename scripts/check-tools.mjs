@@ -56,6 +56,11 @@ export const ALLOW = new Set([
   "detach_stream_session",
 ]);
 
+/** A Claude Code settings.json snippet (`{"env": {...}}`), not tool arguments: a plain object whose only key is `env`, itself a non-null, non-array object. */
+function isSettingsSnippet(obj) {
+  return !!obj && typeof obj === "object" && !Array.isArray(obj) && Object.keys(obj).join() === "env" && !!obj.env && typeof obj.env === "object" && !Array.isArray(obj.env);
+}
+
 /** Top-level `{"...": ...}` substrings of a line (string-aware brace matching), with their start index. */
 function jsonObjects(line) {
   const found = [];
@@ -115,7 +120,7 @@ export function checkText(text, snap, file = "text") {
     const at = `${file}:${fence.start}`;
     let obj;
     try { obj = JSON.parse(fence.body.join("\n")); } catch { problems.push(`${at}: JSON block does not parse`); return; }
-    if (Object.keys(obj ?? {}).join() === "env" && typeof obj.env === "object") return; // a settings.json snippet, not arguments
+    if (isSettingsSnippet(obj)) return; // a settings.json snippet, not arguments
     if (obj && typeof obj === "object" && !Array.isArray(obj) && !Object.keys(obj).every((k) => KNOWN_CONFIG_KEYS.includes(k))) checkObject(at, fence.tool, obj);
   };
   lines.forEach((line, i) => {
@@ -159,7 +164,7 @@ export function checkText(text, snap, file = "text") {
     for (const { index, raw } of jsonObjects(code)) {
       let obj;
       try { obj = JSON.parse(raw); } catch { problems.push(`${at}: JSON example does not parse: ${raw}`); continue; }
-      if (Object.keys(obj).join() === "env" && obj.env && typeof obj.env === "object") continue; // a Claude Code settings.json snippet (README, SPD-1336), not tool arguments
+      if (isSettingsSnippet(obj)) continue; // a Claude Code settings.json snippet (README, SPD-1336), not tool arguments
       checkObject(at, toolFor(index), obj);
     }
     if (mentions.length) carry = mentions[mentions.length - 1].name;
