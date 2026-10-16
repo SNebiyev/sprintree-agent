@@ -15,7 +15,7 @@ Model-independent.
 - **Install (Claude Code):** `claude plugin marketplace add SNebiyev/sprintree-agent && claude plugin install sprintree@sprintree`, then run `/mcp` once and sign in. Codex CLI, Gemini CLI and other agents: see [Install](#install).
 - **Add the card rules:** the skill loads only for sync, task and handover. Append `templates/AGENTS.md` to your `CLAUDE.md` or `AGENTS.md` so the rules hold in every session.
 - **Update (Claude Code):** `claude plugin marketplace update sprintree && claude plugin update sprintree@sprintree`. Claude Code updates the plugin only when its version changes. Then replace the `templates/AGENTS.md` block in your own file (see [Update](#update)).
-- **Live events (Claude Code):** run `/sprintree:connect` once and approve the code in the browser. After a restart, mentions, assignments, replies, review requests and status changes reach the running session as one line each.
+- **Live events (Claude Code):** run `/sprintree:connect` once and approve the code in the browser. Put the project in `.sprintree.json` (`"project": "KEY"`); a link in `CLAUDE.md` is not enough for the monitor. After a restart, mentions, assignments, replies, review requests and status changes reach the running session as one line each.
 - **`/claude` commands on cards are OFF by default (0.6.0).** To turn them on, put `{"env": {"SPRINTREE_COMMANDS": "on"}}` in your own `~/.claude/settings.json` (not a repository's committed `.claude/settings.json`) and restart. Why: anyone who gets into your Sprintree account could otherwise give work to your agent. While it is off, the monitor's `connected` line ends with `/claude commands off`.
 - **On by default with the plugin:** the card reminders (Claude Code hooks, only in a Sprintree project). **Opt-in:** agent runs (needs `SPRINTREE_RUNS_TOKEN`), live events (needs `/sprintree:connect`), `/claude` commands (needs `SPRINTREE_COMMANDS`). See [On and off by default](#on-and-off-by-default).
 - **Tokens:** OAuth is the default and leaves nothing secret on disk. A personal token lives in an environment variable, never in a config file or `.sprintree.json`, and is never printed. Revoke it in Sprintree: Settings -> API & MCP -> Personal access tokens.
@@ -35,7 +35,7 @@ Model-independent.
 | MCP server and `sprintree` skill | on, after install and sign-in | disable the plugin (`/plugin`) |
 | Card reminders (Claude Code) | on, only in a Sprintree project | `export SPRINTREE_HOOKS=off` |
 | Agent runs (Claude Code) | off | `export SPRINTREE_RUNS_TOKEN=...` (an "Agent runs only" token) |
-| Live events (Claude Code) | off until you run `/sprintree:connect` | revoke the token or disable the plugin |
+| Live events (Claude Code) | off until you run `/sprintree:connect`; needs `"project": "KEY"` in `.sprintree.json` | revoke the token or disable the plugin |
 | `/claude` commands on cards | off | `SPRINTREE_COMMANDS` in your own `~/.claude/settings.json` |
 
 ## What you get
