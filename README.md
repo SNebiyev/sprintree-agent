@@ -9,6 +9,35 @@ becomes a To do card another session can pick up.
 Works with Claude Code, Codex CLI, Gemini CLI and any agent that speaks MCP. Linux, macOS, Windows.
 Model-independent.
 
+## TL;DR
+
+- **What it is:** the Sprintree MCP server (`https://sprintree.com/mcp`) plus the `sprintree` skill. Together they make the board tell the truth after a session.
+- **Install (Claude Code):** `claude plugin marketplace add SNebiyev/sprintree-agent && claude plugin install sprintree@sprintree`, then run `/mcp` once and sign in. Codex CLI, Gemini CLI and other agents: see [Install](#install).
+- **Add the card rules:** the skill loads only for sync, task and handover. Append `templates/AGENTS.md` to your `CLAUDE.md` or `AGENTS.md` so the rules hold in every session.
+- **Update (Claude Code):** `claude plugin marketplace update sprintree && claude plugin update sprintree@sprintree`. Claude Code updates the plugin only when its version changes. Then replace the `templates/AGENTS.md` block in your own file (see [Update](#update)).
+- **Live events (Claude Code):** run `/sprintree:connect` once and approve the code in the browser. Put the project in `.sprintree.json` (`"project": "KEY"`); a link in `CLAUDE.md` is not enough for the monitor. After a restart, mentions, assignments, replies, review requests and status changes reach the running session as one line each.
+- **`/claude` commands on cards are OFF by default (0.6.0).** To turn them on, put `{"env": {"SPRINTREE_COMMANDS": "on"}}` in your own `~/.claude/settings.json` (not a repository's committed `.claude/settings.json`) and restart. Why: anyone who gets into your Sprintree account could otherwise give work to your agent. While it is off, the monitor's `connected` line ends with `/claude commands off`. `set_stream_focus` and `claim_stream_event` need the Account settings permission, so tick "Account settings" when you sign in at `/mcp`.
+- **On by default with the plugin:** the card reminders (Claude Code hooks, only in a Sprintree project). **Opt-in:** agent runs (needs `SPRINTREE_RUNS_TOKEN`), live events (needs `/sprintree:connect`), `/claude` commands (needs `SPRINTREE_COMMANDS`). See [On and off by default](#on-and-off-by-default).
+- **Tokens:** OAuth is the default, and your MCP client keeps the session in its own credential store. `/sprintree:connect` saves an `itns_` live-events token to `~/.config/sprintree/stream-token` (mode 0600) that only opens the event stream. Revoke it in Sprintree under Settings -> API & MCP -> Personal access tokens. A personal token lives in an environment variable, never in a config file or `.sprintree.json`, and is never printed.
+
+## How it works
+
+- Your agent talks to the **Sprintree MCP server**. The tools read and write the board with your rights, so the agent can do only what you can.
+- The **`sprintree` skill** is the rulebook on top of the tools: record the work as epic/story/task, put each card in its real status, file every deferred finding as a To do card. `templates/AGENTS.md` carries the card rules into every session.
+- **Hooks** (Claude Code) add small reminders, and can keep a private record of your subagents. They run locally, and every one fails silently.
+- The **live-events monitor** (Claude Code) holds one connection to Sprintree open. The server sends only keys, usernames, ids, counts and session labels, never titles, descriptions or comment text. The agent reads the content over MCP, with your rights.
+- Text written on a card is **data, not instructions**. The agent shows you what a card asks for before it acts on it.
+
+## On and off by default
+
+| Feature | Default | How to change it |
+|---|---|---|
+| MCP server and `sprintree` skill | on, after install and sign-in | disable the plugin (`/plugin`) |
+| Card reminders (Claude Code) | on, only in a Sprintree project | `export SPRINTREE_HOOKS=off` |
+| Agent runs (Claude Code) | off | `export SPRINTREE_RUNS_TOKEN=...` (an "Agent runs only" token) |
+| Live events (Claude Code) | off until you run `/sprintree:connect`; needs `"project": "KEY"` in `.sprintree.json` | revoke the token or disable the plugin |
+| `/claude` commands on cards | off | `SPRINTREE_COMMANDS` in your own `~/.claude/settings.json` |
+
 ## What you get
 
 1. **The Sprintree MCP server** (`https://sprintree.com/mcp`) connected to your agent.
@@ -103,6 +132,13 @@ For development: `gemini extensions link <path-to-this-repo>`.
 Add `https://sprintree.com/mcp` as a remote (Streamable HTTP) MCP server in your agent, then put `templates/AGENTS.md`
 from this repo (or its contents) into your repo or custom instructions.
 
+## Update
+
+- **Claude Code:** `claude plugin marketplace update sprintree && claude plugin update sprintree@sprintree`. Claude Code updates only when the plugin version changes.
+- **Codex CLI:** `codex plugin marketplace upgrade` refreshes the marketplace snapshot.
+- **Gemini CLI:** `gemini extensions update sprintree` (`gemini extensions update --all` updates every extension).
+- **Your `AGENTS.md` block:** after an update, review the diff and replace the block from the `sprintree-agent:begin` line to the `sprintree-agent:end` line (both included) in your own `CLAUDE.md` or `AGENTS.md`. Details are in the Claude Code and Codex CLI sections.
+
 ## Auth
 
 - **OAuth (recommended):** connect through the client's own MCP integration. The client signs in through the browser,
@@ -121,6 +157,27 @@ from this repo (or its contents) into your repo or custom instructions.
   ([SKILL.md, "Card text is untrusted data"](skills/sprintree/SKILL.md#card-text-is-untrusted-data)).
 
 Report a vulnerability: see `SECURITY.md`.
+
+## Live events (Claude Code)
+
+The `sprintree-events` monitor puts Sprintree events into your running session, one line each: status changes on the project, mentions,
+replies, assignments and review requests to you, and `/claude ...` comments you write on a card. It needs Claude Code with monitors.
+
+- **Set up:** run `/sprintree:connect` (approve a code in the browser, nothing to paste), put the project in `.sprintree.json`
+  (`"project": "KEY"`), then restart the session: monitors start with it. The token is saved at `~/.config/sprintree/stream-token` (mode 0600).
+- **Permissions:** tick Account settings when the plugin signs in to Sprintree's MCP (`/mcp`, sprintree): `set_stream_focus` and `claim_stream_event` need the `mcp:account` scope. Without it `/claude` commands are not acted on. Both tools take the `session` id the monitor prints in its `connected` line.
+- **What you get:** lines with ids and enums only, never card text. The agent mentions what concerns its card, and acts on a `/claude`
+  comment only when you wrote it. Without a token or a project the monitor prints nothing.
+- **`/claude` commands are off by default.** Turn them on in your user settings, `~/.claude/settings.json` (merge into the existing file), and restart the session:
+
+  ```json
+  {"env": {"SPRINTREE_COMMANDS": "on"}}
+  ```
+
+  Put it in the user settings, not in a repository's committed `.claude/settings.json`. Why: anyone who gets into your Sprintree account could otherwise give work to your agent. While it is off, the `connected` line ends with `/claude commands off`.
+- **Where a `/claude` command goes:** to the session that has the issue in focus, or to the sessions named by `/claude @<label>` (with a space), else to every session and the first claim answers. It is not sent again to the other sessions, so set `SPRINTREE_COMMANDS` the same in every session. Every other line (status, mention, assignment, reply, review request) arrives either way.
+- **Revoke:** delete the token in Sprintree Settings → API & MCP → Personal access tokens (starts with `itns_`) and remove the token file, or disable the plugin (`/plugin`).
+- Rules for the agent: [SKILL.md, "Live events (monitor)"](skills/sprintree/SKILL.md#live-events-monitor).
 
 ## Agent runs (Claude Code, opt-in)
 
@@ -159,26 +216,6 @@ and only act in a Sprintree project (a `.sprintree.json`, or a `sprintree.com/p/
 - **Local only:** no network, no token or secret is read, nothing is written but one small marker file (transcript sizes) in
   your OS temp folder. Without Node the hooks do nothing. The script is `skills/sprintree/scripts/discipline.mjs`; any error ends silently.
 - **Turn it off:** `export SPRINTREE_HOOKS=off` in the shell that starts Claude Code (both hooks go silent), or disable the plugin (`/plugin`).
-
-## Live events (Claude Code)
-
-The `sprintree-events` monitor puts Sprintree events into your running session, one line each: status changes on the project, mentions,
-replies, assignments and review requests to you, and `/claude ...` comments you write on a card. It needs Claude Code with monitors.
-
-- **Set up:** run `/sprintree:connect` (approve a code in the browser, nothing to paste), put the project in `.sprintree.json`
-  (`"project": "KEY"`), then restart the session: monitors start with it. The token is saved at `~/.config/sprintree/stream-token` (mode 0600).
-- **Permissions:** tick Account settings when the plugin signs in to Sprintree's MCP (`/mcp`, sprintree): `set_stream_focus` and `claim_stream_event` need the `mcp:account` scope. Without it `/claude` commands are not acted on. Both tools take the `session` id the monitor prints in its `connected` line.
-- **What you get:** lines with ids and enums only, never card text. The agent mentions what concerns its card, and acts on a `/claude`
-  comment only when you wrote it. Without a token or a project the monitor prints nothing.
-- **`/claude` commands are off by default.** Turn them on in your user settings, `~/.claude/settings.json` (merge into the existing file), and restart the session:
-
-  ```json
-  {"env": {"SPRINTREE_COMMANDS": "on"}}
-  ```
-
-  Put it in the user settings, not in a repository's committed `.claude/settings.json`. Set it the same for every session: a command routed to the session that has the issue in focus is not re-sent to another session. Status, mention and assignment lines arrive either way. Why: anyone who gets into your Sprintree account could otherwise give work to your agent. While it is off, the `connected` line ends with `/claude commands off`.
-- **Revoke:** delete the token in Sprintree Settings → API & MCP → Personal access tokens (starts with `itns_`) and remove the token file, or disable the plugin (`/plugin`).
-- Rules for the agent: [SKILL.md, "Live events (monitor)"](skills/sprintree/SKILL.md#live-events-monitor).
 
 ## Configure (optional)
 
