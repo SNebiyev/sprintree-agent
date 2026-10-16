@@ -40,11 +40,11 @@ function server(opts = {}) {
 }
 
 /** Runs one hook event in a fresh plugin data folder (or `dir`); answers the exit code, what it printed and the env. */
-async function hook(input, { fetch, dir = tmpDir("runs-"), now = 1_000_000, token = TOKEN } = {}) {
+async function hook(input, { fetch, dir = tmpDir("runs-"), now = 1_000_000, token = TOKEN, budget } = {}) {
   const env = { SPRINTREE_RUNS_TOKEN: token, CLAUDE_PROJECT_DIR: path.join(dir, "my-repo") };
   const out = [];
   const err = [];
-  const code = await main(["hook"], { env, home: dir, fetch, stdin: JSON.stringify(input), out: (s) => out.push(s), err: (s) => err.push(s), now: () => now });
+  const code = await main(["hook"], { env, home: dir, fetch, stdin: JSON.stringify(input), out: (s) => out.push(s), err: (s) => err.push(s), now: () => now, ...(budget ? { hookBudgetMs: budget } : {}) });
   return { code, out: out.join("\n"), err: err.join("\n"), dir, env };
 }
 
@@ -434,4 +434,24 @@ test("a refusal in text, an unknown tool in any case and a lane that is not ther
   const env = { SPRINTREE_RUNS_TOKEN: TOKEN, CLAUDE_PROJECT_DIR: path.join(d2, "my-repo") };
   assert.equal(await main(["lane", "zz"], { env, home: d2, fetch: server({ lanes: [] }).fetch, out: () => {}, err: (x) => err.push(x) }), 1);
   assert.match(err.join(""), /No lane zz/);
+});
+
+test("a hook ends within its budget on a server that never answers and writes the 5-minute backoff (SPD-1395)", { timeout: 5000 }, async () => {
+  const dir = tmpDir("runs-");
+  await hook({ hook_event_name: "SubagentStart", agent_id: "a1" }, { fetch: server().fetch, dir, now: 0 });
+  let calls = 0;
+  const hang = (url, init) => {
+    calls++;
+    return new Promise((_, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal.reason)));
+  };
+  const t0 = Date.now();
+  const r = await hook({ hook_event_name: "UserPromptSubmit", session_id: "S" }, { fetch: hang, dir, now: 100_000, budget: 200 });
+  assert.ok(Date.now() - t0 < 1000, `took ${Date.now() - t0} ms`);
+  assert.equal(r.code, 0);
+  assert.equal(r.out, "");
+  assert.equal(calls, 1);
+  assert.equal(stateOf(r).state.unsupportedUntil, 100_000 + 300_000, "the 5-minute backoff is written");
+  const again = await hook({ hook_event_name: "UserPromptSubmit", session_id: "S" }, { fetch: hang, dir, now: 101_000, budget: 200 });
+  assert.equal(again.out, "");
+  assert.equal(calls, 1, "the next hook makes no request");
 });

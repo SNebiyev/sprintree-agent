@@ -4,6 +4,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versions follo
 While 0.x, a skill rule change is a minor bump and a fix is a patch. `scripts/check-version.mjs` keeps every
 version in the repo equal to the newest released heading below (`## [Unreleased]` is skipped).
 
+## [0.7.1] - 2026-10-16
+
+- SPD-1395: an agent-runs hook ends within about 5 seconds even when the server is slow (it used to wait up to 9 s and hit Claude Code's 10 s hook timeout, "timed out after 10s - output discarded"). One 5 s budget covers all requests of a hook (2 s each), the hard process cap is 7 s, and a timed-out hook now also writes the 5-minute backoff, so the next prompts do not wait again.
+
 ## [0.7.0] - 2026-10-16
 
 - SPD-1360: `/sprintree:commands on|off|status|default on|off` (`commands/commands.md`, `commands.mjs`) switches `/claude` commands from the terminal. `on` and `off` apply to this session only and need no restart: `listen.mjs` watches the setting, prints `sprintree-events /claude commands on` or `off`, and reconnects with the new `X-Stream-Commands` header. `default` sets the state for every session without its own setting, running ones too (they reconnect within seconds). The order is this session, the default, `SPRINTREE_COMMANDS`, off. `status` also shows what the server confirmed. Only the user's terminal can change it: no MCP tool or web setting can.
