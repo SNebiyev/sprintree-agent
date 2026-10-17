@@ -142,6 +142,15 @@
     "key"
    ]
   },
+  "claim_stream_event": {
+   "properties": {
+    "ev": {},
+    "session": {}
+   },
+   "required": [
+    "ev"
+   ]
+  },
   "close_run": {
    "properties": {
     "run": {}
@@ -228,8 +237,16 @@
     "acceptance_criteria": {},
     "definition_of_done": {},
     "description": {},
+    "idempotency_key": {},
     "key": {},
     "name": {},
+    "template": {
+     "enum": [
+      "software",
+      "personal",
+      "launch"
+     ]
+    },
     "visibility": {
      "enum": [
       "private",
@@ -342,6 +359,14 @@
     "view"
    ]
   },
+  "detach_stream_session": {
+   "properties": {
+    "session": {}
+   },
+   "required": [
+    "session"
+   ]
+  },
   "disconnect_repository": {
    "properties": {
     "project": {},
@@ -360,6 +385,43 @@
    "required": [
     "body",
     "comment_id"
+   ]
+  },
+  "example_issues": {
+   "properties": {
+    "action": {
+     "enum": [
+      "count",
+      "add",
+      "remove"
+     ]
+    },
+    "project": {},
+    "template": {
+     "enum": [
+      "software",
+      "personal",
+      "launch"
+     ]
+    }
+   },
+   "required": [
+    "action",
+    "project"
+   ]
+  },
+  "get_chat_notifications": {
+   "properties": {
+    "platform": {
+     "enum": [
+      "slack",
+      "telegram"
+     ]
+    },
+    "project": {}
+   },
+   "required": [
+    "project"
    ]
   },
   "get_comment_versions": {
@@ -614,13 +676,9 @@
    },
    "required": []
   },
-  "get_slack_notifications": {
-   "properties": {
-    "project": {}
-   },
-   "required": [
-    "project"
-   ]
+  "get_telegram_notifications": {
+   "properties": {},
+   "required": []
   },
   "get_work_context": {
    "properties": {
@@ -1017,6 +1075,32 @@
     "project"
    ]
   },
+  "list_stream_sessions": {
+   "properties": {
+    "cursor": {},
+    "format": {
+     "enum": [
+      "json",
+      "text"
+     ]
+    },
+    "limit": {}
+   },
+   "required": []
+  },
+  "list_stream_tokens": {
+   "properties": {
+    "cursor": {},
+    "format": {
+     "enum": [
+      "json",
+      "text"
+     ]
+    },
+    "limit": {}
+   },
+   "required": []
+  },
   "list_views": {
    "properties": {
     "cursor": {},
@@ -1163,6 +1247,14 @@
    },
    "required": [
     "ids"
+   ]
+  },
+  "revoke_stream_token": {
+   "properties": {
+    "id": {}
+   },
+   "required": [
+    "id"
    ]
   },
   "save_cycle": {
@@ -1334,6 +1426,33 @@
    },
    "required": []
   },
+  "set_chat_notifications": {
+   "properties": {
+    "channel": {},
+    "disconnect": {},
+    "events": {
+     "enum": [
+      "issue_created",
+      "issue_done",
+      "issue_blocked",
+      "comment_mention"
+     ]
+    },
+    "include_titles": {},
+    "platform": {
+     "enum": [
+      "slack",
+      "telegram"
+     ]
+    },
+    "previews": {},
+    "project": {}
+   },
+   "required": [
+    "platform",
+    "project"
+   ]
+  },
   "set_commitments": {
    "properties": {
     "keys": {},
@@ -1446,23 +1565,12 @@
     "key"
    ]
   },
-  "set_slack_notifications": {
+  "set_stream_focus": {
    "properties": {
-    "channel": {},
-    "events": {
-     "enum": [
-      "issue_created",
-      "issue_done",
-      "issue_blocked",
-      "comment_mention"
-     ]
-    },
-    "include_titles": {},
-    "project": {}
+    "issue": {},
+    "session": {}
    },
-   "required": [
-    "project"
-   ]
+   "required": []
   },
   "set_subscription": {
    "properties": {
@@ -1474,6 +1582,26 @@
    "required": [
     "subscribed"
    ]
+  },
+  "set_telegram_notifications": {
+   "properties": {
+    "digest": {},
+    "digest_hour": {},
+    "dm_kinds": {
+     "enum": [
+      "mention",
+      "assigned",
+      "reply",
+      "review_requested",
+      "comment",
+      "status",
+      "created",
+      "updated"
+     ]
+    },
+    "paused": {}
+   },
+   "required": []
   },
   "set_watch": {
    "properties": {

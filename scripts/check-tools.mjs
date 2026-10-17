@@ -45,15 +45,11 @@ const WORD = new RegExp(`^${SNAKE.source}$`);
 const OPEN_FENCE = /^\s*(`{3,}|~{3,})\s*([A-Za-z0-9_-]*)/;
 
 // Backticked snake_case words that are not tools, arguments or enum values of the live server: the snake_case
-// `.sprintree.json` keys, a Codex config option and the live-events tools (SPD-1080) that ship server-side in the same wave: drop
-// them from here once `npm run tools:refresh` brings them into the snapshot (the allow-list test then says so).
+// `.sprintree.json` keys and a Codex config option. A word goes from here once `npm run tools:refresh` brings it
+// into the snapshot (the allow-list test then says so).
 export const ALLOW = new Set([
   ...KNOWN_CONFIG_KEYS.filter((k) => WORD.test(k)),
   "bearer_token_env_var",
-  "claim_stream_event",
-  "set_stream_focus",
-  "list_stream_sessions",
-  "detach_stream_session",
 ]);
 
 /** A Claude Code settings.json snippet (`{"env": {...}}`), not tool arguments: a plain object whose only key is `env`, itself a non-null, non-array object. */
