@@ -3,7 +3,15 @@
  * /sprintree:connect: get a live-events token (itns_...) with the device flow and save it where listen.mjs reads it.
  * Pure Node >= 18.7.0, no dependencies.
  *
- *   node connect.mjs     # prints a link and a code, waits for the approval in the browser, saves the token
+ *   node connect.mjs start   # asks for a code, prints the link and the code, saves the pending request (0600) and exits at once
+ *   node connect.mjs wait    # waits for the approval of that request, saves the token, removes the pending request
+ *   node connect.mjs         # both in one process (for agents that show the output of a running command)
+ *
+ * Claude Code runs a long command in the background, so the code printed by a single run is not seen while the browser page asks the
+ * user to compare it: the slash command runs `start` first (short, its output is shown), then `wait`.
+ * The poll carries `replaces`: the token this file holds now, so the server revokes it when it issues the new one (an older server
+ * ignores the unknown field). It is sent only to the server that issued that token: the origin is recorded next to the token file in
+ * stream-token.origin (a token without a record counts as issued by sprintree.com).
  *
  * The token is written to ${XDG_CONFIG_HOME:-$HOME/.config}/sprintree/stream-token (directory 0700, file 0600, written to a temp file in
  * the same directory and renamed) and is never printed. SPRINTREE_URL points at another server (https, or http for localhost).
@@ -15,7 +23,7 @@ import { chmodSync, existsSync, mkdirSync, renameSync, rmSync, writeFileSync } f
 import { hostname } from "node:os";
 import path from "node:path";
 import { isMainModule, stripControls } from "./st.mjs";
-import { baseUrl, errorCode, isStreamToken, safeLine, secondMs, tokenFile } from "./stream-common.mjs";
+import { baseUrl, configDir, errorCode, fileTokenFits, isStreamToken, readJson, readToken, safeLine, secondMs, tokenFile, tokenOriginFile, writeAtomic } from "./stream-common.mjs";
 
 const SAFE_URL_RE = /^https?:\/\/[A-Za-z0-9._~:/?#=%@!$'()*+,;-]+$/; // no space, quote, & ^ | < > or backslash: nothing a shell or cmd.exe would act on
 
@@ -54,6 +62,15 @@ export function saveToken(file, token) {
   return replaced;
 }
 
+/** Records which server issued the token just saved (stream-token.origin). Without the record the token counts as sprintree.com's, so a failed write drops a stale one. */
+function saveOrigin(env, origin) {
+  try {
+    writeAtomic(tokenOriginFile(env), `${origin}\n`);
+  } catch {
+    rmSync(tokenOriginFile(env), { force: true });
+  }
+}
+
 // `soft`: a network error or timeout answers { status: 0 } instead of throwing (the token poll retries it).
 async function post(origin, route, body, soft = false, timeoutMs = 15_000) {
   let res;
@@ -82,16 +99,11 @@ const EXPIRED_AT_DEADLINE = "The code expired. Run /sprintree:connect again. If 
 
 const word = (v, max = 64) => (typeof v === "string" ? stripControls(v).replace(/\s+/g, " ").trim().slice(0, max) : "");
 
-export async function main({ env = process.env, log = (l) => process.stdout.write(`${l}\n`) } = {}) {
-  const processStart = Date.now(); // the 570 s budget counts from here, the start POST included
-  let base;
-  try {
-    base = baseUrl(env);
-  } catch (e) {
-    throw new Failure(e.message);
-  }
-  const unit = secondMs(env, "SPRINTREE_CONNECT_TEST_SECOND_MS", base.local);
+/** The pending device request written by `start` and read by `wait`: <configDir>/connect-device.json (0600). */
+export const deviceFile = (env = process.env) => path.join(configDir(env), "connect-device.json");
 
+/** Asks the server for a code and prints the link and the code. Returns the pending request (device_code, interval, expires_at in ms, origin). */
+async function startDevice({ env, log, base, unit }) {
   const start = await post(base.origin, "/api/stream/device", { client_name: clientName() });
   const d = start.json;
   const userCode = word(d?.user_code, 32);
@@ -109,17 +121,59 @@ export async function main({ env = process.env, log = (l) => process.stdout.writ
     // not a URL
   }
   if (sameSite && !env.SPRINTREE_CONNECT_NO_BROWSER) openBrowser(link);
+  const expiresIn = Math.min(Math.max(Number(d.expires_in) || 600, 1), 3600);
+  return { origin: base.origin, device_code: deviceCode, interval: Number(d.interval) || 5, expires_at: Date.now() + expiresIn * unit };
+}
 
+/** Reads the pending request `start` saved; throws a Failure when there is none or it is for another server. */
+function readPending(env, base) {
+  const p = readJson(deviceFile(env));
+  if (!p || typeof p.device_code !== "string" || !p.device_code || p.origin !== base.origin || !Number.isFinite(p.expires_at)) {
+    throw new Failure("There is no pending connection. Run /sprintree:connect again.");
+  }
+  return p;
+}
+
+export async function main({ env = process.env, log = (l) => process.stdout.write(`${l}\n`), mode = "all" } = {}) {
+  const processStart = Date.now(); // the 570 s budget counts from here, the start POST included
+  let base;
+  try {
+    base = baseUrl(env);
+  } catch (e) {
+    throw new Failure(e.message);
+  }
+  const unit = secondMs(env, "SPRINTREE_CONNECT_TEST_SECOND_MS", base.local);
+
+  if (mode === "start") {
+    const pending = await startDevice({ env, log, base, unit });
+    try {
+      writeAtomic(deviceFile(env), `${JSON.stringify(pending)}\n`);
+    } catch {
+      throw new Failure("Could not save the pending connection (check the permissions of the sprintree config directory).");
+    }
+    return;
+  }
+  const pending = mode === "wait" ? readPending(env, base) : await startDevice({ env, log, base, unit });
+  try {
+    await pollDevice({ env, log, base, unit, pending, processStart });
+  } finally {
+    if (mode === "wait") rmSync(deviceFile(env), { force: true });
+  }
+}
+
+async function pollDevice({ env, log, base, unit, pending, processStart }) {
+  const deviceCode = pending.device_code;
+  // the token this file holds now (not SPRINTREE_STREAM_TOKEN) is the one the new token replaces, if it came from this server
+  const old = fileTokenFits(base.origin, env) ? readToken({ ...env, SPRINTREE_STREAM_TOKEN: "" }).token : undefined;
   const MAX_INTERVAL = 60;
-  let interval = Math.min(Math.max(Number(d.interval) || 5, 1), MAX_INTERVAL);
+  let interval = Math.min(Math.max(Number(pending.interval) || 5, 1), MAX_INTERVAL);
   const grow = () => {
     interval = Math.min(interval + 5, MAX_INTERVAL);
   };
-  const expiresIn = Math.min(Math.max(Number(d.expires_in) || 600, 1), 3600);
   // 30 s under the 600 s Bash timeout of commands/connect.md. The last FINAL of it is kept for the last poll's request:
   // the clipped sleep ends at deadline - FINAL, so an approval up to FINAL before the deadline is fetched. No poll follows
   // it at once (the server answers slow_down to a poll that comes too soon)
-  const deadline = processStart + Math.min(expiresIn, 570) * unit;
+  const deadline = Math.min(pending.expires_at, processStart + 570 * unit);
   const MIN_REQUEST_MS = Math.max(1, Math.min(250, unit)); // less than this is left: no request is worth starting
   const FINAL = Math.min(5 * unit, 15_000);
   for (;;) {
@@ -128,7 +182,7 @@ export async function main({ env = process.env, log = (l) => process.stdout.writ
     await new Promise((r) => setTimeout(r, wait));
     const remaining = deadline - Date.now();
     if (remaining < MIN_REQUEST_MS) break;
-    const r = await post(base.origin, "/api/stream/device/token", { device_code: deviceCode }, true, Math.min(15_000, remaining));
+    const r = await post(base.origin, "/api/stream/device/token", { device_code: deviceCode, ...(old ? { replaces: old } : {}) }, true, Math.min(15_000, remaining));
     if (r.status === 200 && (!r.json || typeof r.json !== "object")) {
       throw new Failure(`The server answered 200 but the reply could not be read, so a token may have been created. Revoke the unused stream token in Settings > API & MCP > Personal access tokens, then run /sprintree:connect again.`);
     }
@@ -137,8 +191,9 @@ export async function main({ env = process.env, log = (l) => process.stdout.writ
       if (!isStreamToken(token)) throw new Failure("The server answered without a usable token. Nothing was saved.");
       const file = tokenFile(env);
       const replaced = saveToken(file, token);
+      saveOrigin(env, base.origin);
       log("Connected. Restart this Claude Code session to start live events (monitors start with the session).");
-      if (replaced) log("This replaced the previous token in that file: revoke the old one in Settings > API & MCP > Personal access tokens.");
+      if (replaced) log("This replaced the previous token in that file. The server revokes the old token itself; if an older server left it listed in Settings > API & MCP > Personal access tokens, revoke that one (not the new token).");
       return;
     }
     const code = errorCode(r.json);
@@ -167,7 +222,9 @@ export async function main({ env = process.env, log = (l) => process.stdout.writ
 }
 
 if (isMainModule(process.argv[1], import.meta.url)) {
-  main().then(
+  const arg = process.argv[2];
+  const mode = arg === "start" || arg === "wait" ? arg : "all";
+  main({ mode }).then(
     () => {
       process.exitCode = 0;
       setTimeout(() => process.exit(0), 1000).unref();

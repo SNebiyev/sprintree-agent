@@ -1,13 +1,13 @@
 // listen.mjs, the live-events monitor, against a fake server on 127.0.0.1 (port 0). Each test spawns the script as Claude Code would.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import path from "node:path";
 import test from "node:test";
 import { BODY, ROOT, childEnv, tmpDir } from "../test-support/helpers.mjs";
 import { dedupe, formatEvent, projectOf, sseParser } from "../skills/sprintree/scripts/listen.mjs";
-import { ackFile, commandsOn, defaultFile, sessionFile, sessionId } from "../skills/sprintree/scripts/stream-common.mjs";
+import { ackFile, commandsOn, defaultFile, liveFile, pointerFile, readToken, sessionFile, sessionId, tokenFile } from "../skills/sprintree/scripts/stream-common.mjs";
 
 const SCRIPT = path.join(ROOT, "skills", "sprintree", "scripts", "listen.mjs");
 const TOKEN = `itns_${BODY}`;
@@ -36,7 +36,7 @@ const sse = (res, ...frames) => {
   for (const f of frames) res.write(f);
 };
 const frame = (event, data, id) => `${id !== undefined ? `id: ${id}\n` : ""}event: ${event}\ndata: ${typeof data === "string" ? data : JSON.stringify(data)}\n\n`;
-const HELLO = { session: "s-1", label: "main", project: "SPD" };
+const HELLO = { session: "s-1", label: "main", project: "SPD", address: "main\u00b7s1" };
 
 /** Spawns listen.mjs; `lines` fills as stdout arrives; `until(n)` waits for n lines; `exited` resolves with the exit code. */
 function start(url, extra = {}, { writeTokenFile = false } = {}) {
@@ -108,7 +108,7 @@ test("hello and every event type are printed as one line each, the claim suffix 
   try {
     await p.until(9);
     assert.deepEqual(p.lines, [
-      "sprintree-events connected · session=s-1 · name=main · project=SPD",
+      "sprintree-events connected · session=s-1 · name=main · address=@main·s1 · project=SPD",
       "SPD-1029 · status in_progress→review · @samir · ev=e1",
       "SPD-1 · status todo→in_progress · @ali · ev=e2 · claim first",
       "SPD-12 · mention · @ali · ev=e3",
@@ -193,7 +193,7 @@ test("a reconnect sends the same session and Last-Event-ID, prints no second hel
   const p = start(srv.url, { CLAUDE_CODE_SESSION_ID: "raw-session-id", SPRINTREE_COMMANDS: "on" });
   try {
     await p.until(3);
-    assert.deepEqual(p.lines, ["sprintree-events connected · session=s-1 · name=main · project=SPD", "1 card → done · @x", "2 cards → done · @y"]);
+    assert.deepEqual(p.lines, ["sprintree-events connected · session=s-1 · name=main · address=@main·s1 · project=SPD", "1 card → done · @x", "2 cards → done · @y"]);
     assert.equal(srv.requests.length, 3);
     assert.equal(srv.requests[1].headers["last-event-id"], "a2");
     assert.equal(srv.requests[2].headers["last-event-id"], "a2");
@@ -211,17 +211,17 @@ test("a changed label on reconnect prints the hello again; a long outage prints 
   const srv = await fake((req, res, n) => {
     if (n === 1) return sse(res, frame("hello", HELLO, "1")), setTimeout(() => res.end(), 20);
     if (n <= 8) return res.writeHead(500).end();
-    sse(res, frame("hello", { ...HELLO, label: "other" }, "2"));
+    sse(res, frame("hello", { ...HELLO, label: "other", address: "other\u00b7s1" }, "2"));
   });
   // 60 "seconds" are 60 * 5 ms = 300 ms here; backoff 5, 10, 20, 40, 80 ... passes 300 ms after a few failures
   const p = start(srv.url, { SPRINTREE_COMMANDS: "on" });
   try {
     await p.until(4, 15000);
     assert.deepEqual(p.lines, [
-      "sprintree-events connected · session=s-1 · name=main · project=SPD",
+      "sprintree-events connected · session=s-1 · name=main · address=@main·s1 · project=SPD",
       "sprintree-events: connection lost, retrying",
       "sprintree-events: reconnected",
-      "sprintree-events connected · session=s-1 · name=other · project=SPD",
+      "sprintree-events connected · session=s-1 · name=other · address=@other·s1 · project=SPD",
     ]);
   } finally {
     await p.quit();
@@ -244,7 +244,8 @@ for (const [name, status, body, line] of [
     try {
       assert.equal(await p.exited, 0);
       assert.deepEqual(p.lines, [line]);
-      assert.equal(srv.requests.length, 1);
+      // a 401 is retried a few times (a new token may be about to be written, see the token tests below), the rest stop at once
+      assert.equal(srv.requests.length, status === 401 ? 4 : 1);
       assert.ok(!p.err().includes(BODY));
     } finally {
       await srv.close();
@@ -410,7 +411,7 @@ test("a frame whose ev was already printed is dropped, also after a reconnect; b
     await p.until(5);
     await new Promise((r) => setTimeout(r, 200));
     assert.deepEqual(p.lines, [
-      "sprintree-events connected · session=s-1 · name=main · project=SPD",
+      "sprintree-events connected · session=s-1 · name=main · address=@main·s1 · project=SPD",
       "SPD-1 · mention · @ann · ev=n1",
       "2 cards → done · @x",
       "2 cards → done · @x",
@@ -458,7 +459,7 @@ async function commandRun(extra) {
     await srv.close();
   }
 }
-const CONNECTED = "sprintree-events connected · session=s-1 · name=main · project=SPD";
+const CONNECTED = "sprintree-events connected · session=s-1 · name=main · address=@main·s1 · project=SPD";
 const NOTES = "while you were away: 2 notifications (mentions, replies, assignments, reviews)";
 
 test("by default /claude commands are off: the connected line says so, command frames and the commands part of a summary print nothing, other lines still arrive", async () => {
@@ -519,6 +520,11 @@ function cfgEnv(extra = {}) {
   const env = { XDG_CONFIG_HOME: cfg, CLAUDE_CODE_SESSION_ID: SID };
   return { cfg, env: { ...env, ...extra }, sess: sessionFile(env), def: defaultFile(env), ack: ackFile(env) };
 }
+/** Writes the token file and records srv's origin as its issuer (what connect.mjs does). */
+const putToken = (c, token, origin) => {
+  put(tokenFile(c.env), `${token}\n`);
+  put(`${tokenFile(c.env)}.origin`, `${origin}\n`);
+};
 const put = (file, text) => {
   mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   writeFileSync(file, text, { mode: 0o600 });
@@ -787,4 +793,159 @@ test("a stat error on the session directory (EACCES) reads as off and does not k
     await p.quit();
     await srv.close();
   }
+});
+
+// --- SPD-1524: the address, a token replaced by /sprintree:connect, /clear ---
+const NEW_TOKEN = `itns_${"Zz9-_".repeat(6)}`;
+const COMMANDS = path.join(ROOT, "skills", "sprintree", "scripts", "commands.mjs");
+
+test("the connected line shows the server's address and the live file holds address and pid; an old server's hello has no address, so none is shown or saved", async () => {
+  const c = cfgEnv();
+  const srv = await fake((req, res) => sse(res, frame("hello", { ...HELLO, session: "7f5c9a10-0000-4000-8000-000000000000", short_id: "7f5c", address: "main\u00b77f5c" }, 1)));
+  const p = start(srv.url, c.env);
+  try {
+    await p.until(1);
+    assert.equal(p.lines[0], "sprintree-events connected · session=7f5c9a10-0000-4000-8000-000000000000 · name=main · address=@main\u00b77f5c · project=SPD · /claude commands off");
+    const live = JSON.parse(readFileSync(liveFile(c.env), "utf8"));
+    assert.equal(live.address, "main\u00b77f5c");
+    assert.equal(live.pid, p.child.pid);
+  } finally {
+    await p.quit();
+    await srv.close();
+  }
+  assert.ok(!existsSync(liveFile(c.env)), "the live file is removed when the monitor ends");
+  const old = await fake((req, res) => sse(res, frame("hello", { ...HELLO, address: undefined, session: "7f5c9a10-0000-4000-8000-000000000000" }, 1)));
+  const q = start(old.url, c.env);
+  try {
+    await q.until(1);
+    assert.equal(q.lines[0], "sprintree-events connected · session=7f5c9a10-0000-4000-8000-000000000000 · name=main · project=SPD · /claude commands off");
+    assert.ok(!existsSync(liveFile(c.env)), "an old server sent no address: nothing is saved");
+  } finally {
+    await q.quit();
+    await old.close();
+  }
+});
+
+test("a hostile address in the hello is ignored: no address is shown", async () => {
+  const c = cfgEnv();
+  const srv = await fake((req, res) => sse(res, frame("hello", { ...HELLO, session: "abcd-1", address: "evil\u001b[31m\u00b7zz" }, 1)));
+  const p = start(srv.url, c.env);
+  try {
+    await p.until(1);
+    assert.match(p.lines[0], / · name=main · project=SPD/);
+    assert.ok(!p.lines[0].includes("address="));
+  } finally {
+    await p.quit();
+    await srv.close();
+  }
+});
+
+test("a reconnect uses the token file again: a token replaced by /sprintree:connect is picked up without a restart", { skip: !posix }, async () => {
+  const c = cfgEnv({ SPRINTREE_STREAM_TOKEN: "" });
+  const srv = await fake((req, res, n) => (n === 1 ? (sse(res, frame("hello", HELLO, 1)), res.end()) : sse(res, frame("hello", HELLO, 2))));
+  putToken(c, TOKEN, srv.url);
+  const p = start(srv.url, c.env, { writeTokenFile: true });
+  try {
+    await p.until(1);
+    putToken(c, NEW_TOKEN, srv.url);
+    await waitFor(() => srv.requests.length >= 2);
+    assert.equal(srv.requests[0].headers.authorization, `Bearer ${TOKEN}`);
+    assert.equal(srv.requests[1].headers.authorization, `Bearer ${NEW_TOKEN}`);
+  } finally {
+    await p.quit();
+    await srv.close();
+  }
+});
+
+test("after a 401 the new token in the file is used and the monitor goes on; a token that stays rejected still ends it after a few tries", { skip: !posix }, async () => {
+  const c = cfgEnv({ SPRINTREE_STREAM_TOKEN: "", SPRINTREE_LISTEN_TEST_BACKOFF_MS: "100" });
+  const srv = await fake((req, res) => (req.headers.authorization === `Bearer ${NEW_TOKEN}` ? sse(res, frame("hello", HELLO, 1)) : res.writeHead(401, { "Content-Type": "application/json" }).end("{}")));
+  putToken(c, TOKEN, srv.url);
+  const p = start(srv.url, c.env, { writeTokenFile: true });
+  try {
+    await waitFor(() => srv.requests.length >= 1);
+    putToken(c, NEW_TOKEN, srv.url); // the server revoked the old token, connect writes the new one a moment later
+    await p.until(1);
+    assert.match(p.lines[0], /connected/);
+    assert.ok(!p.lines.some((l) => /rejected/.test(l)));
+    assert.equal(srv.requests.at(-1).headers.authorization, `Bearer ${NEW_TOKEN}`);
+    assert.ok(srv.requests.length <= 3, "no retry loop");
+  } finally {
+    await p.quit();
+    await srv.close();
+  }
+  assert.equal(readToken(c.env).token, NEW_TOKEN);
+});
+
+test("a token recorded for another server (or a legacy one on a non-default server) is ignored by the monitor, a same-origin one is adopted", { skip: !posix }, async () => {
+  for (const origin of ["https://other.example", null]) {
+    const c = cfgEnv({ SPRINTREE_STREAM_TOKEN: "" });
+    const srv = await fake((req, res, n) => (n === 1 ? (sse(res, frame("hello", HELLO, 1)), res.end()) : sse(res, frame("hello", HELLO, 2))));
+    putToken(c, TOKEN, srv.url);
+    const p = start(srv.url, c.env, { writeTokenFile: true });
+    try {
+      await p.until(1);
+      put(tokenFile(c.env), `${NEW_TOKEN}\n`);
+      if (origin) put(`${tokenFile(c.env)}.origin`, `${origin}\n`);
+      else unlinkSync(`${tokenFile(c.env)}.origin`);
+      await waitFor(() => srv.requests.length >= 2);
+      assert.equal(srv.requests[1].headers.authorization, `Bearer ${TOKEN}`, `ignored: ${origin}`);
+    } finally {
+      await p.quit();
+      await srv.close();
+    }
+  }
+});
+
+/** Runs /sprintree:commands the way the command file does, with its own environment (session id B). */
+const commandsCli = (env, ...args) => spawnSync(process.execPath, [COMMANDS, ...args], { env: { ...process.env, ...env }, encoding: "utf8" });
+
+test("/clear: the monitor started under session A sees `commands on` set under session B (same Claude Code process)", { skip: !posix }, async () => {
+  const cfg = path.join(tmpDir("sa-listen-clear-"), "cfg");
+  const A = { XDG_CONFIG_HOME: cfg, CLAUDE_CODE_SESSION_ID: "clear-session-A", CLAUDE_PID: "424242" };
+  const B = { ...A, CLAUDE_CODE_SESSION_ID: "clear-session-B" };
+  const srv = await fake((req, res, n) => sse(res, frame("hello", { ...HELLO, short_id: "7f5c", address: "main\u00b77f5c", commands: req.headers["x-stream-commands"] === "on" }, `h${n}`)));
+  const p = start(srv.url, A);
+  try {
+    await p.until(1);
+    assert.match(p.lines[0], /\/claude commands off$/);
+    assert.ok(existsSync(pointerFile(A)));
+    assert.equal(JSON.parse(readFileSync(pointerFile(A), "utf8")).pid, p.child.pid);
+    const r = commandsCli(B, "on");
+    assert.equal(r.status, 0);
+    assert.match(r.stdout, /^\/claude commands on in this session/);
+    assert.match(r.stdout, /this session: main\u00b77f5c/);
+    await p.until(2);
+    assert.equal(p.lines[1], "sprintree-events /claude commands on");
+    assert.equal(JSON.parse(readFileSync(sessionFile(A), "utf8")).commands, "on", "the file the monitor watches");
+    assert.ok(!existsSync(sessionFile(B)), "nothing is written for the new id");
+    await waitFor(() => srv.requests.length >= 2);
+    assert.equal(srv.requests.at(-1).headers["x-stream-commands"], "on");
+    // status after /clear reads the monitor's file, ack and address
+    await waitFor(() => /confirmed on/.test(commandsCli(B, "status").stdout));
+    const st = commandsCli(B, "status").stdout;
+    assert.match(st, /commands: on \(this session\)/);
+    assert.match(st, /this session: main\u00b77f5c/);
+    // another Claude Code process in the same folder is not touched
+    const other = commandsCli({ ...B, CLAUDE_PID: "515151" }, "off");
+    assert.equal(other.status, 0);
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(p.lines.length, 2, "the other process's setting did not reach this monitor");
+  } finally {
+    await p.quit();
+    await srv.close();
+  }
+  assert.ok(!existsSync(pointerFile(A)), "the pointer is removed when the monitor ends");
+});
+
+test("a stale pointer (the monitor is gone) is ignored: commands then act on the current session id", { skip: !posix }, () => {
+  const cfg = path.join(tmpDir("sa-listen-stale-"), "cfg");
+  const B = { XDG_CONFIG_HOME: cfg, CLAUDE_CODE_SESSION_ID: "stale-B", CLAUDE_PID: "424243" };
+  const dead = spawnSync(process.execPath, ["-e", ""]); // exited: its pid is free
+  put(pointerFile(B), JSON.stringify({ sid: "stale-A", pid: dead.pid ?? 2 ** 22 - 1, at: new Date().toISOString() }));
+  const r = commandsCli(B, "on");
+  assert.equal(r.status, 0);
+  assert.ok(existsSync(sessionFile(B)));
+  assert.ok(!existsSync(sessionFile({ ...B, CLAUDE_CODE_SESSION_ID: "stale-A" })));
+  assert.doesNotMatch(r.stdout, /this session:/);
 });

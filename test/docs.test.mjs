@@ -301,7 +301,7 @@ test("the /claude commands switch: the README leads with /sprintree:commands, SK
 });
 
 // A slash command's `allowed-tools` lets the model run what it names for that turn without a prompt (SPD-1363): only the exact script of this plugin may be named, never a broad prefix like `node:*`.
-const COMMAND_BASH_RULE = /^Bash\(node "\$\{CLAUDE_PLUGIN_ROOT\}\/skills\/sprintree\/scripts\/[a-z][\w-]*\.mjs"(?: \*)?\)$/;
+const COMMAND_BASH_RULE = /^Bash\(node "\$\{CLAUDE_PLUGIN_ROOT\}\/skills\/sprintree\/scripts\/[a-z][\w-]*\.mjs"(?: (?:\*|start|wait))?\)$/;
 const commandRuleProblems = (md) => {
   let line = md.match(/^allowed-tools:[ \t]*(.*)$/m)?.[1];
   if (line === undefined) return [];
@@ -317,13 +317,13 @@ const commandRuleProblems = (md) => {
 };
 
 test("commands/*.md allowed-tools name an exact plugin script, never a broad Bash prefix", () => {
-  for (const bad of ["Bash(node:*)", "Bash(node *)", "Bash(*)", "Bash", "Bash(node:*), Bash(ls)", "[Bash(node:*)]", 'Bash(node "${CLAUDE_PLUGIN_ROOT}/skills/sprintree/scripts/x.mjs"; rm -rf *)']) {
+  for (const bad of ["Bash(node:*)", "Bash(node *)", "Bash(*)", "Bash", "Bash(node:*), Bash(ls)", 'Bash(node "${CLAUDE_PLUGIN_ROOT}/skills/sprintree/scripts/connect.mjs" start now)', 'Bash(node "${CLAUDE_PLUGIN_ROOT}/skills/sprintree/scripts/connect.mjs" start; rm x)', "[Bash(node:*)]", 'Bash(node "${CLAUDE_PLUGIN_ROOT}/skills/sprintree/scripts/x.mjs"; rm -rf *)']) {
     assert.notDeepEqual(commandRuleProblems(`---\nallowed-tools: ${bad}\n---\n`), [], bad);
   }
   for (const bad of ["---\nallowed-tools:\n  - Bash(node:*)\n---\n", "---\nallowed-tools:\n---\n"]) {
     assert.notDeepEqual(commandRuleProblems(bad), [], bad);
   }
-  for (const ok of ['Bash(node "${CLAUDE_PLUGIN_ROOT}/skills/sprintree/scripts/connect.mjs")', 'Bash(node "${CLAUDE_PLUGIN_ROOT}/skills/sprintree/scripts/commands.mjs" *)']) {
+  for (const ok of ['Bash(node "${CLAUDE_PLUGIN_ROOT}/skills/sprintree/scripts/connect.mjs")', 'Bash(node "${CLAUDE_PLUGIN_ROOT}/skills/sprintree/scripts/commands.mjs" *)', 'Bash(node "${CLAUDE_PLUGIN_ROOT}/skills/sprintree/scripts/connect.mjs" start)', 'Bash(node "${CLAUDE_PLUGIN_ROOT}/skills/sprintree/scripts/connect.mjs" wait)']) {
     assert.deepEqual(commandRuleProblems(`---\nallowed-tools: ${ok}\n---\n`), [], ok);
   }
   const okBlock = '---\nallowed-tools:\n  - Bash(node "${CLAUDE_PLUGIN_ROOT}/skills/sprintree/scripts/connect.mjs")\n---\n';

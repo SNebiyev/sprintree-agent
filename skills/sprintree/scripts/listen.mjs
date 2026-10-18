@@ -18,13 +18,17 @@
  * of a summary, print nothing, so someone who takes over the Sprintree account cannot hand work to this session. Status, notification
  * and batch lines are unaffected. The setting is re-read when its file changes: the monitor then reconnects with the new
  * X-Stream-Commands header (no restart) and writes what the server answered in hello to <session>.ack.
+ * The address of this session (`<label>·<4 hex>`, from the server's hello; an older server sends none, so nothing is printed or saved)
+ * is printed in the connected line and saved, with the pid, to <session>.live for /sprintree:commands.
+ * The token file is re-read at every (re)connect and after a 401, so a token replaced by /sprintree:connect is picked up without a
+ * restart. Only a token issued by this monitor's server is taken (stream-token.origin; no record counts as sprintree.com).
  * The session id sent is derived from CLAUDE_CODE_SESSION_ID (a hash: the raw id never leaves the machine).
  */
 import { execFileSync } from "node:child_process";
 import { lstatSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, utimesSync, watch } from "node:fs";
 import path from "node:path";
 import { isMainModule, resolveConfig } from "./st.mjs";
-import { ackFile, baseUrl, configDir, defaultFile, errorCode, readCommandsState, readToken, safeLine, secondMs, sessionFile, sessionId, writeAtomic } from "./stream-common.mjs";
+import { ackFile, baseUrl, configDir, defaultFile, errorCode, fileTokenFits, liveFile, pidAlive, pointerFile, readCommandsState, readJson, readToken, safeLine, secondMs, sessionFile, sessionId, writeAtomic } from "./stream-common.mjs";
 
 const KEY_RE = /^[A-Z][A-Z0-9]{0,9}$/;
 const FIELD_RE = /^[A-Za-z0-9_.:-]{1,64}$/;
@@ -34,7 +38,10 @@ const IDLE_MS = 120_000; // no byte (not even a keep-alive comment) for this lon
 const BUFFER_MAX = 1024 * 1024;
 const DATA_MAX = 64 * 1024;
 const RETRY_AFTER_MAX_S = 300;
-const SESSION_FILE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(json|ack)$/;
+const SESSION_FILE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(json|ack|live)$/;
+const POINTER_RE = /^proc-\d{1,10}\.json$/;
+const ADDRESS_RE = /^[A-Za-z0-9._-]{1,64}\u00b7[A-Za-z0-9]{1,8}$/u;
+const TOKEN_GRACE_CHECKS = 3; // after a 401: re-read the token file this many times (a new /sprintree:connect may be about to write it)
 const DAY_MS = 24 * 3600 * 1000;
 const SESSION_FILE_MAX_AGE_MS = 30 * 24 * 3600 * 1000;
 const prefix = "sprintree-events";
@@ -201,7 +208,7 @@ export async function main({ env = process.env, cwd = process.cwd(), write = (l)
     return;
   }
   if (!tok.token) return;
-  const token = tok.token;
+  let token = tok.token;
   const project = projectOf(cwd, env);
   if (!project) return;
   let base;
@@ -211,7 +218,7 @@ export async function main({ env = process.env, cwd = process.cwd(), write = (l)
     write(safeLine(`${prefix}: ${e.message}`, token));
     return;
   }
-  const out = (line) => write(safeLine(line, token, LINE_MAX));
+  const out = (line) => write(safeLine(line, token, LINE_MAX)); // reads the current `token` (it may be replaced)
   const sec = secondMs(env, "SPRINTREE_LISTEN_TEST_BACKOFF_MS", base.local);
   const session = sessionId(env);
   const label = labelOf(cwd);
@@ -252,6 +259,7 @@ export async function main({ env = process.env, cwd = process.cwd(), write = (l)
   process.stdout.on?.("error", stop); // the reader of our stdout is gone
 
   setupSessionFiles();
+  writePointer();
   const dirs = [path.join(configDir(env), "sessions"), configDir(env)];
   const watchers = [];
   for (const d of dirs) {
@@ -277,9 +285,11 @@ export async function main({ env = process.env, cwd = process.cwd(), write = (l)
   const repeated = dedupe(1000); // the server may re-send recent frames after a reconnect
   let lastId;
   let helloLabel = null; // the label the server last said hello with
+  let helloAddress = null;
   let backoff = sec;
   let outageSince = null;
   let lostPrinted = false;
+  let graceLeft = TOKEN_GRACE_CHECKS;
 
   try {
     await loop();
@@ -287,6 +297,38 @@ export async function main({ env = process.env, cwd = process.cwd(), write = (l)
     ctl.abort();
     clearInterval(poll);
     for (const w of watchers) w.close();
+    removeOwnState();
+  }
+
+  /** The pointer /sprintree:commands follows after /clear (see stream-common.mjs: pointerFile). Not written without CLAUDE_PID or a session id. */
+  function writePointer() {
+    const file = pointerFile(env);
+    if (!file || !env.CLAUDE_CODE_SESSION_ID) return;
+    try {
+      writeAtomic(file, JSON.stringify({ sid: env.CLAUDE_CODE_SESSION_ID, pid: process.pid, at: new Date().toISOString() }));
+    } catch {
+      // commands then act on the current session id only
+    }
+  }
+  /** Removes the pointer (only if it is ours) and the live file when this monitor ends. */
+  function removeOwnState() {
+    try {
+      const pf = pointerFile(env);
+      if (pf && readJson(pf)?.pid === process.pid) unlinkSync(pf);
+    } catch {
+      // gone already
+    }
+    try {
+      const lf = liveFile(env);
+      if (lf && readJson(lf)?.pid === process.pid) unlinkSync(lf);
+    } catch {
+      // gone already
+    }
+  }
+  /** A new token from the file when it differs from the one in use and was issued by this monitor's server (null: the same, none readable, or another server's). */
+  function newerToken() {
+    const t = readToken(env);
+    return t.token && t.token !== token && fileTokenFits(base.origin, env) ? t.token : null;
   }
 
   /** Refresh the own session file's mtime so the 30-day sweep (here and in other monitors) keeps a live or resumed session's setting. */
@@ -318,6 +360,18 @@ export async function main({ env = process.env, cwd = process.cwd(), write = (l)
       return;
     }
     for (const n of names) {
+      if (POINTER_RE.test(n)) {
+        // a pointer whose monitor is gone (killed without cleanup)
+        const pid = readJson(path.join(dir, n))?.pid;
+        if (pid !== process.pid && !pidAlive(pid)) {
+          try {
+            unlinkSync(path.join(dir, n));
+          } catch {
+            // not ours to delete
+          }
+        }
+        continue;
+      }
       if (!SESSION_FILE_RE.test(n)) continue;
       try {
         const st = lstatSync(path.join(dir, n));
@@ -366,6 +420,8 @@ export async function main({ env = process.env, cwd = process.cwd(), write = (l)
       ctl.signal.addEventListener("abort", onStop, { once: true });
       try {
         check();
+        const t = newerToken();
+        if (t) token = t;
         connAbort = () => conn.abort();
         const headers = {
           Authorization: `Bearer ${token}`,
@@ -379,7 +435,24 @@ export async function main({ env = process.env, cwd = process.cwd(), write = (l)
         if (res.status !== 200) {
           const body = await readSmall(res);
           const ra = Number(res.headers.get("retry-after"));
-          if (res.status === 401) return out(`${prefix}: the live-events token was rejected; run /sprintree:connect`);
+          if (res.status === 401 || res.status === 403) {
+            // /sprintree:connect may have replaced the token (and the server revoked this one) just now: take the new one if the file has it,
+            // else (401) wait a little for it to be written; a token that stays rejected ends the monitor as before
+            const t = newerToken();
+            if (t) {
+              token = t;
+              graceLeft = TOKEN_GRACE_CHECKS;
+              continue;
+            }
+            if (res.status === 401) {
+              if (graceLeft > 0) {
+                graceLeft--;
+                retryAfter = 3 * sec;
+                throw new Error("retry");
+              }
+              return out(`${prefix}: the live-events token was rejected; run /sprintree:connect`);
+            }
+          }
           if (res.status === 404) return out(`${prefix}: project ${project} not found or not shared with you`);
           if (res.status === 429 && codeOf(body) === "connection_limit") return out(`${prefix}: 10 live connections already open; not connecting`);
           if (res.status === 409 && codeOf(body) === "session_detached") return out(`${prefix}: this session was detached in Settings; restart Claude Code after 10 minutes to reconnect`);
@@ -445,9 +518,23 @@ export async function main({ env = process.env, cwd = process.cwd(), write = (l)
     const [s, l, p] = [d?.session, d?.label, d?.project].map(field);
     if (s === null || l === null || p === null) return;
     writeAck(d.commands);
-    if (helloLabel === l) return; // a reconnect: nothing to say unless the label changed
+    graceLeft = TOKEN_GRACE_CHECKS;
+    // the server's address; an older server sends none and cannot route one we would build
+    const address = typeof d.address === "string" && ADDRESS_RE.test(d.address) ? d.address : null;
+    if (address) writeLive(address);
+    if (helloLabel === l && helloAddress === address) return; // a reconnect: nothing to say unless the label or address changed
     helloLabel = l;
-    out(`${prefix} connected · session=${s} · name=${l} · project=${p}${current().value ? "" : " · /claude commands off"}`);
+    helloAddress = address;
+    out(`${prefix} connected · session=${s} · name=${l}${address ? ` · address=@${address}` : ""} · project=${p}${current().value ? "" : " · /claude commands off"}`);
+  }
+  function writeLive(address) {
+    const file = liveFile(env);
+    if (!file) return;
+    try {
+      writeAtomic(file, JSON.stringify({ address, pid: process.pid, at: new Date().toISOString() }));
+    } catch {
+      // /sprintree:commands then prints no address
+    }
   }
   /** What the server said it knows: true, false or null (an older server). Only for a session with an id. */
   function writeAck(c) {

@@ -1,4 +1,4 @@
-<!-- sprintree-agent:begin 0.7.2 -->
+<!-- sprintree-agent:begin 0.8.0 -->
 # Sprintree - agent instructions (generic, any MCP-capable agent)
 
 Add this file to your repo's `AGENTS.md` (`CLAUDE.md` for Claude Code; append, do not overwrite) or

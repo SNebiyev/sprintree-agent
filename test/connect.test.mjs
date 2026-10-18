@@ -42,16 +42,16 @@ async function fake(tokenAnswers, start = {}, minGapMs = 0) {
   return { url: `http://127.0.0.1:${server.address().port}`, calls, close: () => (server.closeAllConnections?.(), new Promise((r) => server.close(r))) };
 }
 
-async function run(srv, { home = tmpDir("sa-connect-"), extra = {} } = {}) {
+async function run(srv, { home = tmpDir("sa-connect-"), extra = {}, args = [] } = {}) {
   const env = childEnv({ HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: path.join(home, "cfg"), SPRINTREE_URL: srv.url, SPRINTREE_CONNECT_TEST_SECOND_MS: "5", SPRINTREE_CONNECT_NO_BROWSER: "1", SPRINTREE_STREAM_TOKEN: "", ...extra });
-  const child = spawn(process.execPath, [SCRIPT], { cwd: home, env, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, [SCRIPT, ...args], { cwd: home, env, stdio: ["ignore", "pipe", "pipe"] });
   let out = "";
   let err = "";
   child.stdout.on("data", (d) => (out += d));
   child.stderr.on("data", (d) => (err += d));
   const code = await new Promise((r) => child.on("exit", r));
   const exitAt = Date.now();
-  return { code, exitAt, out, err, file: path.join(home, "cfg", "sprintree", "stream-token"), dir: path.join(home, "cfg", "sprintree") };
+  return { code, exitAt, out, err, home, file: path.join(home, "cfg", "sprintree", "stream-token"), dir: path.join(home, "cfg", "sprintree"), pending: path.join(home, "cfg", "sprintree", "connect-device.json") };
 }
 
 // The real server envelope: {"error":{"kind","code","message"}}.
@@ -76,7 +76,7 @@ test("pending, then slow_down, then the token: the link and code are printed, th
       assert.equal(statSync(r.file).mode & 0o777, 0o600);
       assert.equal(statSync(r.dir).mode & 0o777, 0o700);
     }
-    assert.deepEqual(readdirSync(r.dir), ["stream-token"], "no temp file is left");
+    assert.deepEqual(readdirSync(r.dir), ["stream-token", "stream-token.origin"], "no temp file is left");
     assert.ok(!(r.out + r.err).includes(BODY));
     const [start, ...polls] = srv.calls;
     assert.equal(start.url, "/api/stream/device");
@@ -88,7 +88,7 @@ test("pending, then slow_down, then the token: the link and code are printed, th
   }
 });
 
-test("an existing token file is replaced, and the output says so and points at revoking the old token", async () => {
+test("an existing token file is replaced, and the output says so and says the server revokes the old one", async () => {
   const home = tmpDir("sa-connect-");
   const dir = path.join(home, "cfg", "sprintree");
   mkdirSync(dir, { recursive: true });
@@ -97,7 +97,7 @@ test("an existing token file is replaced, and the output says so and points at r
   try {
     const r = await run(srv, { home });
     assert.equal(r.code, 0, r.err);
-    assert.match(r.out, /replaced the previous token.*revoke the old one in Settings > API & MCP > Personal access tokens/);
+    assert.match(r.out, /replaced the previous token.*server revokes the old token itself/);
     assert.equal(readFileSync(r.file, "utf8"), `${TOKEN}\n`);
   } finally {
     await srv.close();
@@ -240,6 +240,132 @@ test("a 200 whose body is not JSON: exit 1, the message says to revoke the unuse
     assert.match(lastLine(r.err), /may have been created\. Revoke the unused stream token in Settings > API & MCP > Personal access tokens/);
     assert.ok(!existsSync(r.file));
     assert.equal(tokenCalls(srv).length, 1, "no retry");
+  } finally {
+    await srv.close();
+  }
+});
+
+// --- SPD-1524: the old token is sent as `replaces`; the code is shown before waiting (start / wait) ---
+const OLD = `itns_${"Qq7-_".repeat(6)}`;
+const polls = (srv) => srv.calls.filter((c) => c.url === "/api/stream/device/token");
+
+test("the token in the file is sent as `replaces` in the exchange request, then the file holds the new token; the old one is never printed", async () => {
+  const home = tmpDir("sa-connect-");
+  const dir = path.join(home, "cfg", "sprintree");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(dir, "stream-token"), `${OLD}\n`, { mode: 0o600 });
+  const srv = await fake([[400, env("authorization_pending")], [200, { token: TOKEN }]]);
+  writeFileSync(path.join(dir, "stream-token.origin"), `${srv.url}\n`, { mode: 0o600 });
+  try {
+    // SPRINTREE_STREAM_TOKEN in the environment is not the file: the file's token is the one replaced
+    const r = await run(srv, { home, extra: { SPRINTREE_STREAM_TOKEN: TOKEN } });
+    assert.equal(r.code, 0, r.err);
+    assert.equal(polls(srv).length, 2);
+    for (const c of polls(srv)) assert.deepEqual(c.body, { device_code: "dev-code-1", replaces: OLD });
+    assert.equal(srv.calls[0].body.replaces, undefined, "the code request carries no token");
+    assert.equal(readFileSync(r.file, "utf8"), `${TOKEN}\n`);
+    assert.equal(readFileSync(path.join(r.dir, "stream-token.origin"), "utf8"), `${srv.url}\n`, "the issuing origin is recorded next to the token");
+    assert.ok(!(r.out + r.err).includes(OLD));
+  } finally {
+    await srv.close();
+  }
+});
+
+test("a token recorded for another server is not sent as `replaces`; a legacy token (no record) is not sent to a non-default server", async () => {
+  for (const origin of ["https://other.example", null]) {
+    const home = tmpDir("sa-connect-");
+    const dir = path.join(home, "cfg", "sprintree");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, "stream-token"), `${OLD}\n`, { mode: 0o600 });
+    if (origin) writeFileSync(path.join(dir, "stream-token.origin"), `${origin}\n`, { mode: 0o600 });
+    const srv = await fake([[200, { token: TOKEN }]]);
+    try {
+      const r = await run(srv, { home });
+      assert.equal(r.code, 0, r.err);
+      assert.deepEqual(polls(srv)[0].body, { device_code: "dev-code-1" }, String(origin));
+      assert.equal(readFileSync(path.join(dir, "stream-token.origin"), "utf8"), `${srv.url}\n`, "the record follows the new token");
+    } finally {
+      await srv.close();
+    }
+  }
+});
+
+test("a legacy token (no record) is sent as `replaces` to the default origin", async () => {
+  const { fileTokenFits, DEFAULT_URL } = await import("../skills/sprintree/scripts/stream-common.mjs");
+  const home = tmpDir("sa-connect-");
+  const env = { XDG_CONFIG_HOME: path.join(home, "cfg") };
+  mkdirSync(path.join(home, "cfg", "sprintree"), { recursive: true });
+  assert.equal(fileTokenFits(DEFAULT_URL, env), true);
+  assert.equal(fileTokenFits("http://127.0.0.1:1", env), false);
+  writeFileSync(path.join(home, "cfg", "sprintree", "stream-token.origin"), "https://other.example\n", { mode: 0o600 });
+  assert.equal(fileTokenFits(DEFAULT_URL, env), false, "a record for another server beats the default");
+  assert.equal(fileTokenFits("https://other.example", env), true);
+});
+
+test("without a token file (or with an unusable one) the exchange request has no `replaces`, so an old server sees exactly the old body", async () => {
+  const srv = await fake([[200, { token: TOKEN }]]);
+  try {
+    const r = await run(srv);
+    assert.equal(r.code, 0, r.err);
+    assert.deepEqual(polls(srv)[0].body, { device_code: "dev-code-1" });
+  } finally {
+    await srv.close();
+  }
+});
+
+test("start prints the link and the code, saves the pending request 0600 and exits without polling; wait then saves the token and removes it", async () => {
+  const home = tmpDir("sa-connect-");
+  const srv = await fake([[400, env("authorization_pending")], [200, { token: TOKEN }]]);
+  try {
+    const s = await run(srv, { home, args: ["start"] });
+    assert.equal(s.code, 0, s.err);
+    assert.equal(s.out.trim(), `Open ${srv.url}/connect?code=ABCD-1234 and check that it shows the code ABCD-1234, then approve.`);
+    assert.equal(polls(srv).length, 0, "start does not poll");
+    assert.ok(!existsSync(s.file), "start saves no token");
+    const pending = JSON.parse(readFileSync(s.pending, "utf8"));
+    assert.equal(pending.device_code, "dev-code-1");
+    if (posix) assert.equal(statSync(s.pending).mode & 0o777, 0o600);
+    const w = await run(srv, { home, args: ["wait"] });
+    assert.equal(w.code, 0, w.err);
+    assert.ok(!w.out.includes("Open "), "wait does not print the code again");
+    assert.match(w.out, /^Connected\./);
+    assert.equal(readFileSync(w.file, "utf8"), `${TOKEN}\n`);
+    assert.ok(!existsSync(w.pending), "the pending request is removed");
+    assert.equal(polls(srv).length, 2);
+    assert.equal(srv.calls.filter((c) => c.url === "/api/stream/device").length, 1, "wait does not ask for a new code");
+  } finally {
+    await srv.close();
+  }
+});
+
+test("wait without a pending request fails with one line; a denied wait removes the pending request and saves nothing", async () => {
+  const home = tmpDir("sa-connect-");
+  const srv = await fake([[400, env("access_denied")]]);
+  try {
+    const w0 = await run(srv, { home, args: ["wait"] });
+    assert.equal(w0.code, 1);
+    assert.equal(lastLine(w0.err), "There is no pending connection. Run /sprintree:connect again.");
+    assert.equal(srv.calls.length, 0);
+    await run(srv, { home, args: ["start"] });
+    const w = await run(srv, { home, args: ["wait"] });
+    assert.equal(w.code, 1);
+    assert.equal(lastLine(w.err), "Denied in the browser. Nothing was saved.");
+    assert.ok(!existsSync(w.pending));
+    assert.ok(!existsSync(w.file));
+  } finally {
+    await srv.close();
+  }
+});
+
+test("a pending request that expired ends the wait with the expiry message and is removed", async () => {
+  const home = tmpDir("sa-connect-");
+  const srv = await fake([[400, env("authorization_pending")]], { expires_in: 2 });
+  try {
+    await run(srv, { home, args: ["start"] });
+    const w = await run(srv, { home, args: ["wait"] });
+    assert.equal(w.code, 1);
+    assert.equal(lastLine(w.err), DEADLINE_EXPIRED);
+    assert.ok(!existsSync(w.pending));
   } finally {
     await srv.close();
   }

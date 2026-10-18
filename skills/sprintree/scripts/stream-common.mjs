@@ -24,6 +24,33 @@ export function tokenFile(env = process.env) {
   return path.join(configDir(env), "stream-token");
 }
 
+/**
+ * The origin the token in the token file was issued by: <configDir>/stream-token.origin (one line, written by connect.mjs after the
+ * token). A sidecar, so the token file keeps its one-line shape that older scripts and the user read.
+ */
+export function tokenOriginFile(env = process.env) {
+  return `${tokenFile(env)}.origin`;
+}
+
+/** The recorded origin of the token file (first line), or null (no record: a token from before 0.8.0 or a hand-written file). Never throws. */
+export function readTokenOrigin(env = process.env, platform = process.platform) {
+  try {
+    const v = readSmall(tokenOriginFile(env), platform);
+    return v && typeof v.text === "string" ? v.text.split(/\r?\n/)[0].trim() || null : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True when the token in the token file may be sent to `origin`: its recorded origin equals it; with no record (legacy) only the
+ * default production origin qualifies, because that is where every legacy token came from unless SPRINTREE_URL was set.
+ */
+export function fileTokenFits(origin, env = process.env, platform = process.platform) {
+  const recorded = readTokenOrigin(env, platform);
+  return recorded ? recorded === origin : origin === new URL(DEFAULT_URL).origin;
+}
+
 /** The UUID-shaped session id: a hash of the Claude Code session id (a resumed session keeps it), else random. */
 export function sessionId(env) {
   const id = env.CLAUDE_CODE_SESSION_ID;
@@ -37,6 +64,62 @@ export function sessionId(env) {
 export const sessionFile = (env = process.env) => (env.CLAUDE_CODE_SESSION_ID ? path.join(configDir(env), "sessions", `${sessionId(env)}.json`) : null);
 /** What the server last acknowledged for this session (written by the monitor): <configDir>/sessions/<hash>.ack. */
 export const ackFile = (env = process.env) => (env.CLAUDE_CODE_SESSION_ID ? path.join(configDir(env), "sessions", `${sessionId(env)}.ack`) : null);
+/** Where the running monitor of this session says who it is (pid, address): <configDir>/sessions/<hash>.live. */
+export const liveFile = (env = process.env) => (env.CLAUDE_CODE_SESSION_ID ? path.join(configDir(env), "sessions", `${sessionId(env)}.live`) : null);
+
+/** The Claude Code process id (CLAUDE_PID, which Claude Code exports to everything it starts), else null. */
+export function claudePid(env = process.env) {
+  const n = Number(env.CLAUDE_PID);
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+/**
+ * The pointer from a Claude Code process to its monitor: <configDir>/sessions/proc-<CLAUDE_PID>.json = { sid, pid, at }.
+ * /clear gives a Claude Code process a new CLAUDE_CODE_SESSION_ID but the running monitor keeps the old one in its environment,
+ * and the session id is what names the setting file. CLAUDE_PID does not change on /clear, is the same for the monitor and for the
+ * slash-command script, and differs between two Claude Code processes in the same folder, so it is the key that finds the monitor.
+ */
+export const pointerFile = (env = process.env) => (claudePid(env) ? path.join(configDir(env), "sessions", `proc-${claudePid(env)}.json`) : null);
+
+/** True when a process with this id exists (signal 0 sends nothing; EPERM still means it exists). */
+export function pidAlive(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e?.code === "EPERM";
+  }
+}
+
+/** Reads and parses a small JSON file of ours; null when missing, loose, not a file or not JSON. */
+export function readJson(file, platform = process.platform) {
+  if (!file) return null;
+  const r = readSmall(file, platform);
+  if (!r || r.text === undefined) return null;
+  try {
+    const v = JSON.parse(r.text);
+    return v && typeof v === "object" && !Array.isArray(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The environment to use for the per-session files: when the monitor of this Claude Code process (found through the pointer, and
+ * still running) was started under another session id (after /clear), the same env with that session id; else `env` itself.
+ */
+export function monitorEnv(env = process.env, platform = process.platform) {
+  const p = readJson(pointerFile(env), platform);
+  if (!p || typeof p.sid !== "string" || !p.sid || !pidAlive(p.pid)) return env;
+  return { ...env, CLAUDE_CODE_SESSION_ID: p.sid };
+}
+
+/** What the running monitor of this session wrote: { address, pid } or null (no monitor, a dead one, or no address yet). */
+export function readLive(env = process.env, platform = process.platform) {
+  const v = readJson(liveFile(env), platform);
+  return v && typeof v.address === "string" && v.address && pidAlive(v.pid) ? { address: v.address, pid: v.pid } : null;
+}
+
 /** The default for every session: <configDir>/commands-default (one line, on or off). */
 export const defaultFile = (env = process.env) => path.join(configDir(env), "commands-default");
 
