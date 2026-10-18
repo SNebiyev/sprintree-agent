@@ -813,13 +813,15 @@ test("the connected line shows the server's address and the live file holds addr
     await p.quit();
     await srv.close();
   }
-  assert.ok(!existsSync(liveFile(c.env)), "the live file is removed when the monitor ends");
+  // Windows kills the child with TerminateProcess, so its exit cleanup never runs there (readLive ignores a dead pid anyway).
+  if (posix) assert.ok(!existsSync(liveFile(c.env)), "the live file is removed when the monitor ends");
+  const c2 = cfgEnv();
   const old = await fake((req, res) => sse(res, frame("hello", { ...HELLO, address: undefined, session: "7f5c9a10-0000-4000-8000-000000000000" }, 1)));
-  const q = start(old.url, c.env);
+  const q = start(old.url, c2.env);
   try {
     await q.until(1);
     assert.equal(q.lines[0], "sprintree-events connected · session=7f5c9a10-0000-4000-8000-000000000000 · name=main · project=SPD · /claude commands off");
-    assert.ok(!existsSync(liveFile(c.env)), "an old server sent no address: nothing is saved");
+    assert.ok(!existsSync(liveFile(c2.env)), "an old server sent no address: nothing is saved");
   } finally {
     await q.quit();
     await old.close();
