@@ -192,13 +192,24 @@ can `/clear` or compact without losing them. The plugin's hooks do the recording
   most once a minute per subagent, and a subagent's last message when it stops, cut to 3900 characters. Sprintree tokens,
   common secret shapes (cloud and Git host keys, `password=`-style values, private keys, credentials in URLs) and control or
   invisible characters are taken out first; that is a net, not a guarantee, so a subagent that prints other secrets sends them.
-  No transcript, no files.
+  No transcript, no files. Claude Code's own helper agents (they have no agent type) are ignored.
+- **At `/clear` (local only):** the hook reads the end of the transcript (the last 2 MB), cleans the same way, and keeps the
+  user's last request (2000 characters) and the last reply (3000) in a file under `~/.sprintree-agent/handoff` (mode 0600).
+  The `SessionStart` that follows `/clear` shows them once as a note, only if they are less than 10 minutes old, and deletes
+  the file. Nothing is sent anywhere. The file is named after the repository and the Claude Code process id, so parallel
+  sessions of one repository do not read each other's notes; where the process id cannot be found (Windows), the file is
+  named after the repository only and shown only if it is less than a minute old. No note for compaction or resume.
 - **What comes back:** after `/clear`, a compaction or a resume, a short status of every lane (as data, not instructions);
-  on the next prompt after a subagent finished, one line saying so. `node skills/sprintree/scripts/runs.mjs status` shows it any time.
+  on the next prompt after a subagent finished, one line saying so. `node skills/sprintree/scripts/runs.mjs status` shows it any time
+  (running, stale, failed and blocked lanes first, then done, newest first; done lanes older than 3 hours fold into one line, `status --all` lists them).
+  If the server cannot be read after `/clear`, you get one line saying so and the next prompt brings the whole status.
 - **Where it lives:** in your Sprintree account only. The web shows how many runs you have and deletes them all; your data
   export holds the text. The plugin closes the run when the last active session of the repository ends (not on `/clear` or an in-session `/resume`; quit and then `claude --resume` starts without the run; another session seen in the last 15 minutes keeps it open), an idle run closes after a day, a closed one is deleted a day later.
 - **Turn it off:** unset `SPRINTREE_RUNS_TOKEN`, revoke the token, or disable the plugin (`/plugin`). A hook never fails a session:
-  no Node, no network or an old server all end silently, and a server that does not answer is left alone for five minutes.
+  no Node, no network or an old server all end silently, and a server that does not answer (timeout, network error, 5xx, 429) is left alone for five minutes.
+  A tool error the server answered (for example the run-limit error) is no outage: it pauses nothing. Lane events that
+  could not be sent wait in a local outbox (32 at most) and go out with the next hook that reaches the server. `status` prints
+  one line when hooks are paused or failed lately.
 - The hooks are Claude Code's (`claude-hooks/hooks.json`). Gemini CLI and Codex get the skill and the MCP server as before.
 
 ## Card reminders (Claude Code)

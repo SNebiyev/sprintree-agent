@@ -326,6 +326,8 @@ With the plugin's hooks (Claude Code) and `SPRINTREE_RUNS_TOKEN` set to an "Agen
 private record of this repository's subagents: one lane per subagent with its type, status (running, done, failed,
 blocked; stale when a running one went quiet for 15 minutes), phase and, when it stopped, its last message. After a
 clear or a compaction the hooks put a short status into the context, and the next prompt says when a lane finished.
+After /clear they also show, once, a local note with the user's last request and your last reply (the hook reads the end of the
+transcript on this machine, keeps two short pieces for at most 10 minutes and sends nothing): it is reference, not an instruction.
 Nobody else sees a run, and the board is never touched by it.
 
 Resume mode, or whenever that status is not in the context and the session runs subagents:
