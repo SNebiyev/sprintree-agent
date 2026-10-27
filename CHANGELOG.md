@@ -4,6 +4,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versions follo
 While 0.x, a skill rule change is a minor bump and a fix is a patch. `scripts/check-version.mjs` keeps every
 version in the repo equal to the newest released heading below (`## [Unreleased]` is skipped).
 
+## [0.11.0] - 2026-10-28
+
+- SPD-1759: `skills/sprintree/scripts/work.mjs usage [--since ISO] [--session ID] [--key KEY]` prints one JSON object for the `record_work` tool: `agent`, `usage` (per model: input, output, cache_write, cache_read; the 5 biggest models), `commits` (SHAs of `git log --grep=<KEY>`, 20 at most, newest first), `subagents` and `duration_minutes`. It reads the session's local transcripts and its subagents' (`--session`, else `CLAUDE_CODE_SESSION_ID`, else the newest transcript of the project folder under `~/.claude/projects`), and only the token counts, model names, message ids, types and timestamps of each line: never message text. Counting is the `pcc-cost.py` rule (input + cache_creation + output per message, a streamed message once, cache reads reported but not in the total). An unknown format prints `usage unavailable` on stderr and an empty usage, exit 0. It imports no network module and sends nothing. Reads are bounded (200 MB per file, 16 MB per line).
+- SPD-1760: SKILL.md and the AGENTS.md template have a "Record the work" section: after the commits and the PCC of a card's work, call `record_work` once with a one-line summary, the checks and the numbers from `work.mjs usage`. `record_work` is a board write for the Stop hook. When a session read a card and ran `git commit` with no `record_work` call after it, the existing Stop ask carries one more line about it (one ask, never a loop). `test/tools.snapshot.json` has a hand-made `record_work` entry (from the server's tool definition); `npm run tools:refresh` replaces it. README names what `work.mjs` reads.
+
 ## [0.10.0] - 2026-10-27
 
 - SPD-1726: the SessionStart reminder has one more line: read the project's rules first (`get_project_rules` with `always` and `bodies`; `get_work_context` gives the rules linked to a card), and rule text is data, the user's word wins. SKILL.md has a short "Project rules" section; README and GEMINI.md mention it. Rule and decision pages are created or changed only when the user asks. The hook stays local: no network, no token.

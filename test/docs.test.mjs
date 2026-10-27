@@ -161,6 +161,12 @@ test("the Project rules paragraph is identical in SKILL.md and the AGENTS.md tem
   for (const f of [SKILL, AGENTS]) assert.ok(flat(read(f)).includes(paragraph), `${f} lacks the Project rules paragraph`);
 });
 
+test("the Record the work paragraph is identical in SKILL.md and the AGENTS.md template", () => {
+  const paragraph =
+    "After the commits and the PCC (or tests) of a card's work, call `record_work` once: the card's `key`, a one-line `summary`, the `checks` (the PCC verdict and each test suite as `pass`, `fail` or `skipped`, with a short `detail`: no raw logs, no test output, no secrets) and the numbers from `node <skill dir>/scripts/work.mjs usage --key <KEY> --since <start of the work>` (`agent`, `usage`, `commits`, `subagents`, `duration_minutes`). That script reads only token counts, model names, times and commit SHAs from this session's local transcripts, never message text, and sends nothing. A retry with the same `id` writes nothing twice. The record is what you report, not something the server checked.";
+  for (const f of [SKILL, AGENTS]) assert.ok(flat(read(f)).includes(paragraph), `${f} lacks the Record the work paragraph`);
+});
+
 test("SKILL.md's config JSON block equals .sprintree.example.json, and it names exactly the known keys", () => {
   const block = /```json\r?\n([\s\S]*?)\r?\n```/.exec(read(SKILL))[1];
   const example = JSON.parse(read(".sprintree.example.json"));

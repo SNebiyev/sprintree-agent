@@ -373,3 +373,41 @@ test("bashWrites: a 320 KB command of repeated sed words classifies in linear ti
   console.log(`bashWrites 320KB x2: ${ms.toFixed(1)} ms`);
   assert.ok(ms < 500, `${ms} ms`);
 });
+
+// SPD-1760: a card read plus a git commit with no record_work after it adds one line to the same nudge.
+const COMMIT = { name: "Bash", input: { command: 'git commit -m "feat: x (SPD-1)"' } };
+const RECORD = { name: "mcp__sprintree__record_work", input: { key: "SPD-1" } };
+const reasonOf = (dir, ...tools) => JSON.parse(hook("Stop", stop(dir, { transcript_path: transcript(dir, ...tools) })).out).reason;
+
+test("Stop: a card read and a commit add the record_work reminder line to the nudge", () => {
+  const dir = project();
+  const reason = reasonOf(dir, READ, EDIT, COMMIT);
+  assert.match(reason, /Sprintree check/);
+  assert.match(reason, /record_work/);
+  assert.match(reason, /work\.mjs usage/);
+  assert.equal(reason.split("\n").length, 2, "one extra line");
+  assert.match(reasonOf(dir, READ, { name: "Bash", input: { command: "git -C . commit -q -m x" } }), /record_work/);
+});
+
+test("Stop: no record_work line without a commit, without a card read, or when record_work came after the commit", () => {
+  const dir = project();
+  assert.doesNotMatch(reasonOf(dir, READ, EDIT), /record_work/, "an edit, no commit");
+  assert.doesNotMatch(reasonOf(dir, READ, { name: "Bash", input: { command: "git status && git log -3" } }, EDIT), /record_work/, "git without a commit");
+  assert.doesNotMatch(reasonOf(dir, WRITE, COMMIT), /record_work/, "a board write and a commit, but no card read");
+  assert.doesNotMatch(reasonOf(dir, READ, COMMIT, RECORD), /record_work/, "record_work after the commit (MCP)");
+  const viaSt = { name: "Bash", input: { command: "node skills/sprintree/scripts/st.mjs call record_work '{\"key\":\"SPD-1\"}'" } };
+  assert.doesNotMatch(reasonOf(dir, READ, COMMIT, viaSt), /record_work/, "record_work after the commit (st.mjs)");
+  assert.match(reasonOf(dir, READ, RECORD, COMMIT), /record_work/, "record_work BEFORE the last commit does not count");
+});
+
+test("Stop: the record_work line is one nudge, never a loop; record_work is a board write", () => {
+  const dir = project();
+  const input = stop(dir, { transcript_path: transcript(dir, READ, COMMIT) });
+  assert.match(JSON.parse(hook("Stop", input).out).reason, /record_work/);
+  assert.equal(hook("Stop", input).out, "", "the next stop with nothing new is silent");
+  assert.equal(hook("Stop", { ...input, stop_hook_active: true }).out, "", "an active stop is silent");
+  const only = project();
+  const r = hook("Stop", stop(only, { transcript_path: transcript(only, RECORD) }));
+  assert.equal(JSON.parse(r.out).decision, "block", "record_work alone counts as a board write");
+  assert.doesNotMatch(JSON.parse(r.out).reason, /record_work/);
+});

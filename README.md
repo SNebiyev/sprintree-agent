@@ -225,8 +225,15 @@ and only act in a Sprintree project (a `.sprintree.json`, or a `sprintree.com/p/
   `get_issue_details`, ...) and then changed code. If the user asked about a card, the agent checks it shows its real status
   and has a result comment; if not, it does nothing on the board. A session that never touched Sprintree, or only read lists
   or searched, is not asked. It asks again only after new such work since the last ask, never twice in a row.
+  If the session read a card and made a `git commit` with no `record_work` call after it, the same ask has one more line
+  reminding the agent to record the work (see below). It is never a separate ask.
 - **Local only:** no network, no token or secret is read, nothing is written but one small marker file (transcript sizes) in
   your OS temp folder. Without Node the hooks do nothing. The script is `skills/sprintree/scripts/discipline.mjs`; any error ends silently.
+- **What it reads locally (`work.mjs`):** the skill's `node skills/sprintree/scripts/work.mjs usage --key <KEY> --since <ISO>` gives the agent the
+  numbers for the `record_work` tool (a proof of work on a card: models and token counts, commit SHAs, checks, a short summary). It reads only
+  token counts, model names and timestamps from this session's local Claude Code transcripts (and its subagents'), and the SHAs from
+  `git log --grep=<KEY>`; never message text, tool input or output. It counts a streamed message once and leaves cache reads out of the
+  total, the same rule as `pcc-cost.py`. It imports no network module and sends nothing: the agent sends the record, with your rights.
 - **Turn it off:** `export SPRINTREE_HOOKS=off` in the shell that starts Claude Code (both hooks go silent), or disable the plugin (`/plugin`).
 
 ## Configure (optional)

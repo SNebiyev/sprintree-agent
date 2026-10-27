@@ -1203,6 +1203,23 @@
     "project"
    ]
   },
+  "record_work": {
+   "properties": {
+    "agent": {},
+    "checks": {},
+    "commits": {},
+    "duration_minutes": {},
+    "id": {},
+    "key": {},
+    "remove": {},
+    "subagents": {},
+    "summary": {},
+    "usage": {}
+   },
+   "required": [
+    "key"
+   ]
+  },
   "remove_member": {
    "properties": {
     "project": {},

@@ -47,7 +47,7 @@ import { fileURLToPath } from "node:url";
 
 // One version source. A constant (not a read of ../../../package.json) so it keeps working when
 // the skill folder is copied alone. A test (and scripts/check-version.mjs) keeps it equal to package.json.
-export const VERSION = "0.10.0";
+export const VERSION = "0.11.0";
 // The one minimum Node version: the runtime check, its message and package.json `engines.node` are built from
 // or tested against it, and so is the CI matrix. A test fails when a doc states another one.
 export const MIN_NODE = "18.7.0";
