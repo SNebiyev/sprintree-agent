@@ -5,7 +5,8 @@
  *   node discipline.mjs SessionStart   # in a Sprintree project: a short card-discipline reminder as additional context
  *   node discipline.mjs Stop           # if this session (or its subagents) wrote to the board, or read a card and then changed code,
  *                                      # ask once to check the cards; again only after new such work since the last ask. When it also
- *                                      # read a card and committed with no record_work call after the commit, that ask carries one more line
+ *                                      # read a card and committed with no record_work call after the commit, that ask carries one more line.
+ *                                      # A record_work call clears the remembered card read: later commits add that line only after a new card read
  *
  * Local only: no network, no token or secret is read, nothing is written outside the OS temp folder (one small marker file
  * per session that was nudged: the transcript sizes at that moment). The project is "a Sprintree project" when the repo (the folder holding .git, found upward
@@ -34,14 +35,17 @@ const CARD_READ_TOOLS = new Set(["get_work_context", "get_issue_details", "get_i
 const CODE_EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 // A Bash command that writes a file or the repo: sed/perl in-place, tee to a file, a > or >> redirect to a path (not /dev/null, not
 // &1/&2, not a numbered fd such as 2>), git apply/am/commit. Conservative: read-only commands (npm test, git status, grep, cat) do not match.
+// The `git` word and its skipped options (-C dir, -c k=v, --no-pager), one string for both users below so they cannot drift.
+const GIT_PREFIX = String.raw`git\s+(?:-\S+\s+(?:[^-\s]\S*\s+)?)*`;
 const BASH_WRITE_RES = [
   /\btee\s+(?:-\S+\s+)*(?!\/dev\/null(?:[\s;&|)]|$))[^\s\-|;&<>]/,
   /(?:^|[^<>&=\-0-9|])>>?[ \t]*(?!&|\/dev\/null(?:[\s;&|)]|$))[^\s&|;<>]/,
-  /\bgit\s+(?:-\S+\s+(?:[^-\s]\S*\s+)?)*(?:apply|am|commit)\b/,
+  new RegExp(String.raw`\b${GIT_PREFIX}(?:apply|am|commit)\b`),
 ];
-// A `git commit` Bash call (the same git-option skipping as above). A session that read a card and committed is reminded once to leave
-// the proof of the work (record_work) when it made no such call after the last commit.
-const GIT_COMMIT_RE = /\bgit\s+(?:-\S+\s+(?:[^-\s]\S*\s+)?)*commit\b/;
+// A `git commit` Bash call at a command start (start of the text or after ; & | ( or a newline, then optional env VAR=x words), so
+// `grep -n 'git commit' README.md` and `echo git commit` do not count. A session that read a card and committed is reminded once to
+// leave the proof of the work (record_work) when it made no such call after the last commit.
+const GIT_COMMIT_RE = new RegExp(String.raw`(?:^|[;&|(\n])[ \t]*(?:env[ \t]+)?(?:[A-Za-z_][A-Za-z0-9_]*=\S*[ \t]+)*${GIT_PREFIX}commit\b`);
 const SED_WORD_RE = /(?:^|[^A-Za-z0-9_])sed$/;
 const PERL_WORD_RE = /(?:^|[^A-Za-z0-9_])perl$/;
 const SED_SHAPE_RE = /^-[A-Za-z.]*$/;
@@ -156,11 +160,12 @@ export function isSprintreeProject(cwd) {
 
 /**
  * What one JSONL transcript text holds: `write` (a Sprintree write tool call), `read` (a single-card read), `edit` (a code
- * change), `editAfterRead` (a code change after a single-card read) and `commitUnrecorded` (a `git commit` with no `record_work` call after it).
+ * change), `editAfterRead` (a code change after a single-card read), `commitUnrecorded` (a `git commit` with no `record_work` call after it)
+ * and `readSinceRecord` (a card read after the last `record_work` call, or any card read when there was none).
  */
 export function scanTranscript(text, seenRead = false) {
   // seenRead: a card read was seen earlier in this session (carried in the marker), maybe beyond the tail that is scanned
-  const r = { write: false, read: seenRead, edit: false, editAfterRead: false, commitUnrecorded: false, recorded: false };
+  const r = { write: false, read: seenRead, edit: false, editAfterRead: false, commitUnrecorded: false, recorded: false, readSinceRecord: false };
   for (const line of text.split("\n")) {
     if (!line.includes('"tool_use"')) continue;
     let obj;
@@ -182,9 +187,10 @@ export function scanTranscript(text, seenRead = false) {
         if (t === "record_work") {
           r.commitUnrecorded = false;
           r.recorded = true;
+          r.readSinceRecord = false;
         }
         if (WRITE_TOOLS.has(t)) r.write = true;
-        else if (CARD_READ_TOOLS.has(t)) r.read = true;
+        else if (CARD_READ_TOOLS.has(t)) r.read = r.readSinceRecord = true;
       }
       if (tools.length === 0 && typeof cmd === "string" && GIT_COMMIT_RE.test(cmd)) r.commitUnrecorded = true;
       if (CODE_EDIT_TOOLS.has(b.name) || (tools.length === 0 && typeof cmd === "string" && bashWrites(cmd))) {
@@ -278,7 +284,7 @@ function readMarker(file) {
   return null;
 }
 
-// cardSeen: sticky, a card was read at some point in the session; nudges never clear it (only the record_work line uses it)
+// cardSeen: sticky, a card was read at some point in the session; nudges never clear it, a record_work call does (only the record_work line uses it)
 const writeMarker = (file, files, cardRead, nudged = false, cardSeen = false) =>
   writeFileSync(file, `${JSON.stringify({ files, cardRead, nudged, cardSeen })}\n`, { mode: 0o600 });
 
@@ -319,17 +325,19 @@ export function run(event, input, env = process.env) {
       if (text) scans.push(scanTranscript(text, prev?.cardRead === true));
     }
     const cardSeen = prev?.cardSeen === true || scans.some((s) => s.read);
+    // what is remembered for later turns: a record_work call clears the sticky read, only a card read after it brings it back
+    const keepSeen = scans.some((s) => s.recorded) ? scans.some((s) => s.readSinceRecord) : cardSeen;
     // a card read and a commit with no record_work after it: one more line in a nudge. record_work in a file that ends with no unrecorded
     // commit of its own may postdate a commit in another file (order unknown): no line then. The card read may come from an earlier,
     // already nudged window (cardSeen), so a commit alone in a later window still gets the reminder.
     const record = scans.some((s) => s.commitUnrecorded) && !scans.some((s) => s.recorded && !s.commitUnrecorded) && cardSeen;
     if (!qualifies(scans) && !record) {
-      if (prev?.nudged) writeMarker(marker, marks, prev.cardRead, false, cardSeen); // a normal turn after the nudge: the answer window is over
+      if (prev?.nudged) writeMarker(marker, marks, prev.cardRead, false, keepSeen); // a normal turn after the nudge: the answer window is over
       // a card read with no work after it yet: remember it, the read may fall out of the scanned tail before the edit comes
-      if (scans.some((s) => s.read) && prev?.cardRead !== true) writeMarker(marker, marks, true, false, cardSeen);
+      if (scans.some((s) => s.read) && prev?.cardRead !== true) writeMarker(marker, marks, true, false, keepSeen);
       return "";
     }
-    writeMarker(marker, ends, false, true, cardSeen); // throws = no nudge; the read is used up by this nudge
+    writeMarker(marker, ends, false, true, keepSeen); // throws = no nudge; the read is used up by this nudge
     return JSON.stringify({ decision: "block", reason: record ? `${STOP_REASON}\n${RECORD_LINE}` : STOP_REASON });
   }
   return "";

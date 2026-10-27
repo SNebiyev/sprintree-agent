@@ -429,3 +429,38 @@ test("Stop: a commit in a subagent file and record_work in the main file gives n
   subagent(dir, input.session_id, COMMIT);
   assert.doesNotMatch(JSON.parse(hook("Stop", input).out).reason, /record_work/);
 });
+
+test("Stop: only a git commit at a command start adds the record_work line", () => {
+  const bash = (command) => ({ name: "Bash", input: { command } });
+  const dir = project();
+  for (const command of ["grep -n 'git commit' README.md", "echo git commit"]) {
+    assert.doesNotMatch(reasonOf(dir, READ, EDIT, bash(command)), /record_work/, command);
+  }
+  for (const command of ["cd a && git commit -m x", "git -C dir commit -m x", "make; git commit -m x", "(git commit -m x)", "ls\ngit commit -m x", "FOO=1 git commit -m x", "env A=b git commit -m x", "true || git commit -m x"]) {
+    assert.match(reasonOf(dir, READ, bash(command)), /record_work/, command);
+  }
+});
+
+test("Stop: a commit in a subagent file and record_work later in the main file gives no record_work line", () => {
+  const dir = project();
+  const main = transcript(dir, READ, EDIT);
+  const input = stop(dir, { transcript_path: main });
+  subagent(dir, input.session_id, COMMIT);
+  append(main, RECORD);
+  assert.doesNotMatch(JSON.parse(hook("Stop", input).out).reason, /record_work/);
+});
+
+test("Stop: after record_work the remembered card read is cleared: later commits alone add no record_work line", () => {
+  const dir = project();
+  const t = transcript(dir, READ, COMMIT);
+  const input = stop(dir, { transcript_path: t });
+  assert.match(JSON.parse(hook("Stop", input).out).reason, /record_work/, "read, commit: the line");
+  append(t, RECORD);
+  hook("Stop", input); // the record_work turn (a board write)
+  for (let i = 0; i < 2; i++) {
+    append(t, COMMIT);
+    assert.doesNotMatch(hook("Stop", input).out, /record_work/, `turn ${i + 1}: a commit with no new card read`);
+  }
+  append(t, READ, COMMIT);
+  assert.match(JSON.parse(hook("Stop", input).out).reason, /record_work/, "a new card read brings the line back");
+});

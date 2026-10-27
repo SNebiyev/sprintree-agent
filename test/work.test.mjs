@@ -4,13 +4,14 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT = path.join(ROOT, "skills", "sprintree", "scripts", "work.mjs");
 const FIXTURE = path.join(ROOT, "test", "fixtures", "work");
 const NO_NET = path.join(ROOT, "test-support", "no-network.cjs");
 const SESSION = "sess-fixture-0001";
+const SCRIPT_URL = pathToFileURL(SCRIPT).href;
 const SECRET = "hunter2-not-a-real-secret";
 
 // A fixed identity through the environment, so the test repos commit on a machine with no git config (CI).
@@ -93,7 +94,10 @@ test("work usage: the session is --session, else CLAUDE_CODE_SESSION_ID, else th
   const named = { ...e, vars: { CLAUDE_CODE_SESSION_ID: SESSION } };
   assert.equal(run(named, []).json.usage.length, 3, "the env var names the fixture session");
   assert.deepEqual(run(named, ["--session", "newer-session"]).json.usage, [{ model: "m-other", input: 1, output: 2, cache_write: 0, cache_read: 0 }], "the flag wins over the env var");
-  assert.deepEqual(run(e, []).json.usage.map((u) => u.model), ["m-other"], "no flag, no env var: the newest *.jsonl");
+  const guess = run(e, []);
+  assert.deepEqual(guess.json.usage.map((u) => u.model), ["m-other"], "no flag, no env var: the newest *.jsonl");
+  assert.match(guess.err, /usage: no session id, used the newest transcript newer-session/, "the guess is said on stderr");
+  assert.doesNotMatch(run(named, []).err, /no session id/, "a named session is not a guess");
   const missing = run({ ...e, vars: { CLAUDE_CODE_SESSION_ID: "no-such-session" } }, []);
   assert.match(missing.err, /usage unavailable/);
   assert.deepEqual(missing.json.usage, [], "a named session that is not there is not replaced by another one");
@@ -177,6 +181,11 @@ test("work usage: bad arguments exit 2 with a message", () => {
   const e = withFixture();
   assert.equal(run(e, ["--since", "yesterday"]).code, 2);
   assert.equal(run(e, ["--nope", "1"]).code, 2);
+  for (const args of [["--since="], ["--since", ""], ["--session="], ["--session", ""], ["--key="], ["--key", ""]]) {
+    const r = run(e, args);
+    assert.equal(r.code, 2, args.join(" "));
+    assert.match(r.err, /needs a value/, args.join(" "));
+  }
   const r = spawnSync(process.execPath, [SCRIPT, "report"], { encoding: "utf8" });
   assert.equal(r.status, 2);
   assert.match(r.stderr, /usage: node work\.mjs usage/);
@@ -200,4 +209,16 @@ test("work usage: the session file is found when the session runs from another p
   assert.ok(JSON.parse(r.stdout).usage.length > 0, "found in the repo's folder although cwd is the worktree");
   const none = spawnSync(process.execPath, ["--require", NO_NET, SCRIPT, "usage", "--session", "missing-id"], { cwd: wt, encoding: "utf8", env: { ...process.env, HOME: e.home, USERPROFILE: e.home, CLAUDE_CODE_SESSION_ID: "" } });
   assert.match(none.stderr, /usage unavailable/, "an unknown id never falls back to another session");
+});
+
+test("work usage: a transcript over the size cap is dropped with a `usage partial` note", async () => {
+  const { sessionUsage } = await import(SCRIPT_URL);
+  const e = withFixture();
+  const notes = [];
+  assert.equal(sessionUsage(e.proj, SESSION, null, notes, 1), null, "every file over the cap: nothing counted");
+  assert.ok(notes.includes("usage partial: main transcript too large"), notes.join("|"));
+  assert.ok(notes.some((n) => /usage partial: \d+ subagent transcript\(s\) too large/.test(n)), notes.join("|"));
+  const none = [];
+  assert.ok(sessionUsage(e.proj, SESSION, null, none), "the real cap keeps the fixture");
+  assert.deepEqual(none, []);
 });

@@ -23,7 +23,7 @@
  * text, tool input and tool output are never kept, copied or printed. An unknown format or an unreadable folder ends with
  * `usage unavailable` on stderr, an empty usage and exit 0. Reads are bounded (file size, line length, file count).
  */
-import { closeSync, lstatSync, openSync, readdirSync, readSync, realpathSync, statSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, openSync, readdirSync, readSync, realpathSync, statSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -84,12 +84,14 @@ function* fileLines(file) {
 }
 
 /**
- * What one transcript holds in range: the final usage of each message (by id) and the first and last timestamp.
+ * What one transcript holds in range: the final usage of each message (by id) and the first and last timestamp; `{ big: true }` for a
+ * file over `fileMax` (not read), null for a file that is not a regular one.
  * Only the fields named in the header are read from a line.
  */
-export function readTranscript(file, sinceMs = null) {
+export function readTranscript(file, sinceMs = null, fileMax = FILE_MAX) {
   const st = statSync(file);
-  if (!st.isFile() || st.size > FILE_MAX) return null;
+  if (!st.isFile()) return null;
+  if (st.size > fileMax) return { big: true };
   const msgs = new Map(); // message id -> { model, input, output, cacheWrite, cacheRead }
   let first = null;
   let last = null;
@@ -224,27 +226,34 @@ function newestSession(dir) {
 }
 
 /** The usage of one session: { models: [{model,input,output,cache_write,cache_read}], left, subagents, duration_minutes } or null when no usage was found. */
-export function sessionUsage(dir, session, sinceMs = null) {
+export function sessionUsage(dir, session, sinceMs = null, notes = [], fileMax = FILE_MAX) {
   const totals = new Map();
   let first = null;
   let last = null;
   let subagents = 0;
-  let any = false;
+  let skippedSubs = 0;
   const take = (file, isSub) => {
     let r;
     try {
-      r = readTranscript(file, sinceMs);
+      r = readTranscript(file, sinceMs, fileMax);
     } catch {
+      r = undefined; // missing (a session with no subagents) is no news; a file that failed to read is said below
+      if (!isSub) notes.push("usage partial: main transcript unreadable");
+      else if (existsSync(file)) skippedSubs++;
       return;
     }
     if (!r) return;
+    if (r.big) {
+      if (isSub) skippedSubs++;
+      else notes.push("usage partial: main transcript too large");
+      return;
+    }
     if (isSub && r.first !== null) subagents++;
     if (r.first !== null) {
       if (first === null || r.first < first) first = r.first;
       if (last === null || r.last > last) last = r.last;
     }
     for (const v of r.msgs.values()) {
-      any = true;
       const t = totals.get(v.model) ?? { model: v.model, input: 0, output: 0, cache_write: 0, cache_read: 0 };
       t.input = Math.min(t.input + v.input, TOKENS_MAX);
       t.output = Math.min(t.output + v.output, TOKENS_MAX);
@@ -255,7 +264,7 @@ export function sessionUsage(dir, session, sinceMs = null) {
   };
   take(path.join(dir, `${session}.jsonl`), false);
   for (const f of jsonlFiles(path.join(dir, session, "subagents"))) take(f, true);
-  if (!any) return null;
+  if (skippedSubs > 0) notes.push(`usage partial: ${skippedSubs} subagent transcript(s) too large or unreadable`);
   const all = [...totals.values()]
     .filter((t) => t.input + t.output + t.cache_write + t.cache_read > 0)
     .sort((a, b) => b.input + b.output + b.cache_write - (a.input + a.output + a.cache_write) || a.model.localeCompare(b.model));
@@ -284,7 +293,7 @@ function parseArgs(argv) {
     const name = eq > 0 ? a.slice(0, eq) : a;
     if (name !== "--since" && name !== "--session" && name !== "--key") throw new Error(`unknown argument ${a.slice(0, 40)}`);
     const v = eq > 0 ? a.slice(eq + 1) : argv[++i];
-    if (typeof v !== "string") throw new Error(`${name} needs a value`);
+    if (typeof v !== "string" || v === "") throw new Error(`${name} needs a value`);
     o[name.slice(2)] = v;
   }
   return o;
@@ -312,8 +321,9 @@ export function usageReport(argv, env = process.env, cwd = process.cwd()) {
   } else if (cands.length > 0) {
     dir = cands[0];
     session = newestSession(dir);
+    if (session) notes.push(`usage: no session id, used the newest transcript ${session} (a guess: pass --session if this is not your session)`);
   }
-  if (dir && SESSION_OK.test(session)) found = sessionUsage(dir, session, sinceMs);
+  if (dir && SESSION_OK.test(session)) found = sessionUsage(dir, session, sinceMs, notes);
   if (found) {
     out.usage = found.models;
     out.subagents = found.subagents;
