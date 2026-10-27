@@ -887,9 +887,10 @@ test("a token recorded for another server (or a legacy one on a non-default serv
     const p = start(srv.url, c.env, { writeTokenFile: true });
     try {
       await p.until(1);
-      put(tokenFile(c.env), `${NEW_TOKEN}\n`);
+      // origin record first: the fake server reconnects at once, and a reconnect between the two writes must not see the new token next to the old same-origin record
       if (origin) put(`${tokenFile(c.env)}.origin`, `${origin}\n`);
       else unlinkSync(`${tokenFile(c.env)}.origin`);
+      put(tokenFile(c.env), `${NEW_TOKEN}\n`);
       await waitFor(() => srv.requests.length >= 2);
       assert.equal(srv.requests[1].headers.authorization, `Bearer ${TOKEN}`, `ignored: ${origin}`);
     } finally {

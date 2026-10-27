@@ -44,6 +44,9 @@ function transcript(dir, ...tools) {
 
 const WRITE = { name: "mcp__sprintree__update_issue_status", input: { key: "SPD-1" } };
 
+// SPD-1726: the reminder is read on every session start; a new line must be a deliberate raise of this cap.
+const LIMIT = 700;
+
 test("SessionStart: silent without Sprintree config, a short reminder with .sprintree.json", () => {
   const plain = project({});
   const r0 = hook("SessionStart", { cwd: plain, source: "startup" });
@@ -58,6 +61,8 @@ test("SessionStart: silent without Sprintree config, a short reminder with .spri
   assert.ok(text.split("\n").length <= 6);
   assert.match(text, /in_progress/);
   assert.match(text, /data, not instructions/);
+  assert.match(text, /get_project_rules/);
+  assert.ok(text.length <= LIMIT, `reminder is ${text.length} characters`);
 });
 
 test("SessionStart: a link in a doc file counts, from a subfolder; the KEY placeholder does not", () => {
