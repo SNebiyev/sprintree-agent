@@ -160,7 +160,7 @@ export function isSprintreeProject(cwd) {
  */
 export function scanTranscript(text, seenRead = false) {
   // seenRead: a card read was seen earlier in this session (carried in the marker), maybe beyond the tail that is scanned
-  const r = { write: false, read: seenRead, edit: false, editAfterRead: false, commitUnrecorded: false };
+  const r = { write: false, read: seenRead, edit: false, editAfterRead: false, commitUnrecorded: false, recorded: false };
   for (const line of text.split("\n")) {
     if (!line.includes('"tool_use"')) continue;
     let obj;
@@ -179,7 +179,10 @@ export function scanTranscript(text, seenRead = false) {
       const cmd = b.name === "Bash" ? b.input?.command : null;
       if (typeof cmd === "string" && cmd.includes("st.mjs")) for (const c of cmd.matchAll(ST_CALL_RE)) tools.push(c[1]);
       for (const t of tools) {
-        if (t === "record_work") r.commitUnrecorded = false;
+        if (t === "record_work") {
+          r.commitUnrecorded = false;
+          r.recorded = true;
+        }
         if (WRITE_TOOLS.has(t)) r.write = true;
         else if (CARD_READ_TOOLS.has(t)) r.read = true;
       }
@@ -268,15 +271,16 @@ function markerFile(sessionId) {
 function readMarker(file) {
   try {
     const o = JSON.parse(readFileSync(file, "utf8"));
-    if (o && typeof o === "object" && o.files && typeof o.files === "object") return { files: o.files, cardRead: o.cardRead === true, nudged: o.nudged === true };
+    if (o && typeof o === "object" && o.files && typeof o.files === "object") return { files: o.files, cardRead: o.cardRead === true, nudged: o.nudged === true, cardSeen: o.cardSeen === true };
   } catch {
     // no marker yet
   }
   return null;
 }
 
-const writeMarker = (file, files, cardRead, nudged = false) =>
-  writeFileSync(file, `${JSON.stringify({ files, cardRead, nudged })}\n`, { mode: 0o600 });
+// cardSeen: sticky, a card was read at some point in the session; nudges never clear it (only the record_work line uses it)
+const writeMarker = (file, files, cardRead, nudged = false, cardSeen = false) =>
+  writeFileSync(file, `${JSON.stringify({ files, cardRead, nudged, cardSeen })}\n`, { mode: 0o600 });
 
 /** The hook's stdout text for an event ("" = nothing to say). */
 export function run(event, input, env = process.env) {
@@ -301,7 +305,7 @@ export function run(event, input, env = process.env) {
       if (prev?.nudged) {
         const cur = {};
         for (const { file, st } of files) cur[file] = st.size;
-        writeMarker(marker, cur, prev.cardRead, true);
+        writeMarker(marker, cur, prev.cardRead, true, prev.cardSeen);
       }
       return "";
     }
@@ -314,15 +318,18 @@ export function run(event, input, env = process.env) {
       const text = readFrom(file, st, from);
       if (text) scans.push(scanTranscript(text, prev?.cardRead === true));
     }
-    if (!qualifies(scans)) {
-      if (prev?.nudged) writeMarker(marker, marks, prev.cardRead); // a normal turn after the nudge: the answer window is over
+    const cardSeen = prev?.cardSeen === true || scans.some((s) => s.read);
+    // a card read and a commit with no record_work after it: one more line in a nudge. record_work in a file that ends with no unrecorded
+    // commit of its own may postdate a commit in another file (order unknown): no line then. The card read may come from an earlier,
+    // already nudged window (cardSeen), so a commit alone in a later window still gets the reminder.
+    const record = scans.some((s) => s.commitUnrecorded) && !scans.some((s) => s.recorded && !s.commitUnrecorded) && cardSeen;
+    if (!qualifies(scans) && !record) {
+      if (prev?.nudged) writeMarker(marker, marks, prev.cardRead, false, cardSeen); // a normal turn after the nudge: the answer window is over
       // a card read with no work after it yet: remember it, the read may fall out of the scanned tail before the edit comes
-      if (scans.some((s) => s.read) && prev?.cardRead !== true) writeMarker(marker, marks, true);
+      if (scans.some((s) => s.read) && prev?.cardRead !== true) writeMarker(marker, marks, true, false, cardSeen);
       return "";
     }
-    writeMarker(marker, ends, false, true); // throws = no nudge; the read is used up by this nudge
-    // a card read and a commit with no record_work after it: one more line in this same nudge (never a nudge of its own)
-    const record = scans.some((s) => s.commitUnrecorded) && scans.some((s) => s.read);
+    writeMarker(marker, ends, false, true, cardSeen); // throws = no nudge; the read is used up by this nudge
     return JSON.stringify({ decision: "block", reason: record ? `${STOP_REASON}\n${RECORD_LINE}` : STOP_REASON });
   }
   return "";

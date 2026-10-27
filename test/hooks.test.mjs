@@ -411,3 +411,21 @@ test("Stop: the record_work line is one nudge, never a loop; record_work is a bo
   assert.equal(JSON.parse(r.out).decision, "block", "record_work alone counts as a board write");
   assert.doesNotMatch(JSON.parse(r.out).reason, /record_work/);
 });
+
+test("Stop: the record_work line survives a nudge between the card read and the commit (multi-turn)", () => {
+  const dir = project();
+  const t = transcript(dir, READ, EDIT);
+  const input = stop(dir, { transcript_path: t });
+  assert.doesNotMatch(JSON.parse(hook("Stop", input).out).reason, /record_work/, "turn 1: nudge, no commit yet");
+  append(t, COMMIT);
+  assert.match(JSON.parse(hook("Stop", input).out).reason, /record_work/, "turn 2: the commit alone brings the line");
+  assert.equal(hook("Stop", input).out, "", "and only once");
+});
+
+test("Stop: a commit in a subagent file and record_work in the main file gives no record_work line", () => {
+  const dir = project();
+  const main = transcript(dir, READ, EDIT, RECORD);
+  const input = stop(dir, { transcript_path: main });
+  subagent(dir, input.session_id, COMMIT);
+  assert.doesNotMatch(JSON.parse(hook("Stop", input).out).reason, /record_work/);
+});

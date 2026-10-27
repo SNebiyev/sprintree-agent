@@ -17,7 +17,7 @@
  *
  * Session: --session, else $CLAUDE_CODE_SESSION_ID, else the newest transcript of the project folder
  * ~/.claude/projects/<repo path with every character but letters and digits turned into "-">.
- * Commits (only with --key): `git log --grep=<KEY>` of this repo (since --since), 20 at most, newest first; SHAs only.
+ * Commits (only with --key): `git log --grep=<KEY>` (the whole key, not a longer one such as SPD-10 for SPD-1) of this repo (since --since), 20 at most, newest first; SHAs only.
  *
  * Privacy: each line is parsed and only `type`, `timestamp`, `message.id`, `message.model` and `message.usage` are picked. Message
  * text, tool input and tool output are never kept, copied or printed. An unknown format or an unreadable folder ends with
@@ -162,19 +162,42 @@ function gitTop(cwd) {
   }
 }
 
-/** The project folder under ~/.claude/projects for this repo (or cwd), or null. */
-function projectDir(cwd, home) {
+/** The project folders under ~/.claude/projects for this repo (git top first, then cwd), as many as exist. */
+function projectDirs(cwd, home) {
   const root = path.join(home, ".claude", "projects");
+  const found = [];
   for (const base of [gitTop(cwd), cwd]) {
     if (!base) continue;
     for (const k of projectKeys(base)) {
       const d = path.join(root, k);
       try {
-        if (statSync(d).isDirectory()) return d;
+        if (statSync(d).isDirectory() && !found.includes(d)) found.push(d);
       } catch {
         // not this one
       }
     }
+  }
+  return found;
+}
+
+/** The folder holding <session>.jsonl: the candidates first (the session may run in a worktree folder), then every project folder. */
+function dirOfSession(cands, home, session) {
+  const has = (d) => {
+    try {
+      return lstatSync(path.join(d, `${session}.jsonl`)).isFile();
+    } catch {
+      return false;
+    }
+  };
+  for (const d of cands) if (has(d)) return d;
+  const root = path.join(home, ".claude", "projects");
+  try {
+    for (const name of readdirSync(root)) {
+      const d = path.join(root, name);
+      if (has(d)) return d;
+    }
+  } catch {
+    // no projects folder
   }
   return null;
 }
@@ -243,7 +266,7 @@ export function sessionUsage(dir, session, sinceMs = null) {
 
 /** The SHAs of the commits whose message names `key`, newest first, at most 20. Arguments go as an array: no shell. */
 export function commitsFor(key, since, cwd) {
-  const args = ["log", "--format=%H", `--grep=${key}`, "-n", String(COMMITS_MAX)];
+  const args = ["log", "--format=%H", "-E", `--grep=(^|[^A-Za-z0-9-])${key}([^0-9]|$)`, "-n", String(COMMITS_MAX)];
   if (since) args.push(`--since=${since}`);
   try {
     const out = execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 10000, maxBuffer: 1024 * 1024 });
@@ -279,11 +302,18 @@ export function usageReport(argv, env = process.env, cwd = process.cwd()) {
   if (opts.key && !KEY_OK.test(opts.key)) throw new Error("--key must look like SPD-1");
   const out = { agent: "claude-code", usage: [], commits: [], subagents: 0, duration_minutes: 0 };
   let found = null;
-  const dir = projectDir(cwd, env.HOME || env.USERPROFILE || homedir());
-  if (dir) {
-    const session = opts.session || (env.CLAUDE_CODE_SESSION_ID || "").trim() || newestSession(dir);
-    if (SESSION_OK.test(session)) found = sessionUsage(dir, session, sinceMs);
+  const home = env.HOME || env.USERPROFILE || homedir();
+  const cands = projectDirs(cwd, home);
+  const known = opts.session || (env.CLAUDE_CODE_SESSION_ID || "").trim();
+  let dir = null;
+  let session = known;
+  if (known) {
+    if (SESSION_OK.test(known)) dir = dirOfSession(cands, home, known);
+  } else if (cands.length > 0) {
+    dir = cands[0];
+    session = newestSession(dir);
   }
+  if (dir && SESSION_OK.test(session)) found = sessionUsage(dir, session, sinceMs);
   if (found) {
     out.usage = found.models;
     out.subagents = found.subagents;

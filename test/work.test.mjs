@@ -152,6 +152,10 @@ test("work usage --key: the commits of the repo that name the key, newest first,
   assert.deepEqual(run(e, ["--session", SESSION, "--key", "SPD-9"]).json.commits, []);
   assert.deepEqual(run(e, ["--session", SESSION, "--key", "SPD-1", "--since", "2021-01-01T00:00:00Z"]).json.commits, [], "--since applies to the commits too");
   assert.deepEqual(run(e, ["--session", SESSION, "--key", "SPD-1", "--since", "2019-01-01T00:00:00Z"]).json.commits, [second, first]);
+  git(e.repo, "commit", "-q", "--allow-empty", "-m", "feat: longer key (SPD-10)");
+  git(e.repo, "commit", "-q", "--allow-empty", "-m", "feat: other project (XSPD-1)");
+  assert.deepEqual(run(e, ["--session", SESSION, "--key", "SPD-1"]).json.commits, [second, first], "SPD-1 does not match SPD-10 or XSPD-1");
+  assert.equal(run(e, ["--session", SESSION, "--key", "SPD-10"]).json.commits.length, 1);
   const many = setup();
   for (let i = 0; i < 25; i++) git(many.repo, "commit", "-q", "--allow-empty", "-m", `c${i} SPD-1`);
   assert.equal(run(many, ["--key", "SPD-1"]).json.commits.length, 20, "at most 20");
@@ -176,4 +180,24 @@ test("work usage: bad arguments exit 2 with a message", () => {
   const r = spawnSync(process.execPath, [SCRIPT, "report"], { encoding: "utf8" });
   assert.equal(r.status, 2);
   assert.match(r.stderr, /usage: node work\.mjs usage/);
+});
+
+test("work usage: the session file is found when the session runs from another project folder (a worktree), not another session's numbers", () => {
+  const e = withFixture();
+  const wt = path.join(e.repo, ".claude", "worktrees", "x");
+  mkdirSync(wt, { recursive: true });
+  writeFileSync(path.join(wt, "f"), "1");
+  git(wt, "init", "-q");
+  const other = path.join(e.home, ".claude", "projects", wt.replace(/[^A-Za-z0-9]/g, "-"));
+  mkdirSync(other, { recursive: true });
+  writeFileSync(path.join(other, "other-session.jsonl"), "{}\n");
+  const r = spawnSync(process.execPath, ["--require", NO_NET, SCRIPT, "usage", "--session", SESSION], {
+    cwd: wt,
+    encoding: "utf8",
+    env: { ...process.env, HOME: e.home, USERPROFILE: e.home, CLAUDE_CODE_SESSION_ID: "" },
+  });
+  assert.equal(r.status, 0);
+  assert.ok(JSON.parse(r.stdout).usage.length > 0, "found in the repo's folder although cwd is the worktree");
+  const none = spawnSync(process.execPath, ["--require", NO_NET, SCRIPT, "usage", "--session", "missing-id"], { cwd: wt, encoding: "utf8", env: { ...process.env, HOME: e.home, USERPROFILE: e.home, CLAUDE_CODE_SESSION_ID: "" } });
+  assert.match(none.stderr, /usage unavailable/, "an unknown id never falls back to another session");
 });
