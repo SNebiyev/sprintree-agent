@@ -1,0 +1,2 @@
+{"type": "user", "timestamp": "2026-10-28T10:45:00.000Z", "message": {"role": "user", "content": "subtask hunter2-not-a-real-secret"}}
+{"type": "assistant", "timestamp": "2026-10-28T10:50:00.000Z", "uuid": "u-msg_E-30", "message": {"id": "msg_E", "type": "message", "role": "assistant", "model": "claude-sonnet-fake", "content": [{"type": "text", "text": "working on it, hunter2-not-a-real-secret"}], "usage": {"input_tokens": 3, "output_tokens": 30, "cache_creation_input_tokens": 300, "cache_read_input_tokens": 0}}}
