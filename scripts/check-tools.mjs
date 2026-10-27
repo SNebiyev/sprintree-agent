@@ -50,8 +50,6 @@ const OPEN_FENCE = /^\s*(`{3,}|~{3,})\s*([A-Za-z0-9_-]*)/;
 export const ALLOW = new Set([
   ...KNOWN_CONFIG_KEYS.filter((k) => WORD.test(k)),
   "bearer_token_env_var",
-  // a server tool newer than the snapshot (SPD-1726); drop it once `npm run tools:refresh` brings it in
-  "get_project_rules",
 ]);
 
 /** A Claude Code settings.json snippet (`{"env": {...}}`), not tool arguments: a plain object whose only key is `env`, itself a non-null, non-array object. */

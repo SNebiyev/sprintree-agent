@@ -45,12 +45,13 @@
     "content_base64": {},
     "content_type": {},
     "filename": {},
-    "key": {}
+    "key": {},
+    "page": {},
+    "project": {}
    },
    "required": [
     "content_base64",
-    "filename",
-    "key"
+    "filename"
    ]
   },
   "bulk_update_issues": {
@@ -221,7 +222,15 @@
   "create_page": {
    "properties": {
     "after": {},
+    "always": {},
     "idempotency_key": {},
+    "kind": {
+     "enum": [
+      "doc",
+      "rule",
+      "decision"
+     ]
+    },
     "markdown": {},
     "parent": {},
     "project": {},
@@ -478,7 +487,8 @@
       "links",
       "code",
       "criteria",
-      "pages"
+      "pages",
+      "work"
      ]
     },
     "key": {},
@@ -510,6 +520,7 @@
     "due": {
      "enum": [
       "overdue",
+      "soon",
       "week",
       "none",
       "any"
@@ -588,6 +599,32 @@
    },
    "required": []
   },
+  "get_project_rules": {
+   "properties": {
+    "always": {},
+    "bodies": {},
+    "cursor": {},
+    "format": {
+     "enum": [
+      "json",
+      "text"
+     ]
+    },
+    "kind": {
+     "enum": [
+      "rule",
+      "decision",
+      "all"
+     ]
+    },
+    "limit": {},
+    "project": {},
+    "query": {}
+   },
+   "required": [
+    "project"
+   ]
+  },
   "get_project_topology": {
    "properties": {
     "ac_incomplete": {},
@@ -614,6 +651,7 @@
     "due": {
      "enum": [
       "overdue",
+      "soon",
       "week",
       "none",
       "any"
@@ -693,6 +731,7 @@
      ]
     },
     "include_comments": {},
+    "include_rules": {},
     "key": {}
    },
    "required": [
@@ -851,6 +890,7 @@
       "project.repository_disconnected",
       "issue.criteria_changed",
       "project.criteria_templates_changed",
+      "issue.work_recorded",
       "view.created",
       "view.updated",
       "view.deleted",
@@ -1084,7 +1124,9 @@
       "text"
      ]
     },
-    "limit": {}
+    "limit": {},
+    "live": {},
+    "project": {}
    },
    "required": []
   },
@@ -1358,6 +1400,7 @@
     "due": {
      "enum": [
       "overdue",
+      "soon",
       "week",
       "none",
       "any"
@@ -1778,7 +1821,15 @@
   },
   "update_page": {
    "properties": {
+    "always": {},
     "base_rev": {},
+    "kind": {
+     "enum": [
+      "doc",
+      "rule",
+      "decision"
+     ]
+    },
     "markdown": {},
     "page": {},
     "project": {},
@@ -1803,6 +1854,11 @@
       "default"
      ]
     },
+    "guest_comments": {},
+    "guest_indexable": {},
+    "guest_issues": {},
+    "guest_names": {},
+    "guest_pages": {},
     "key": {},
     "name": {},
     "project": {},
