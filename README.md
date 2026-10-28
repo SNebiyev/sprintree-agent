@@ -180,6 +180,10 @@ replies, assignments and review requests to you, and `/claude ...` comments you 
 - **Revoke:** delete the token in Sprintree Settings → API & MCP → Personal access tokens (starts with `itns_`) and remove the token file, or disable the plugin (`/plugin`).
 - Rules for the agent: [SKILL.md, "Live events (monitor)"](skills/sprintree/SKILL.md#live-events-monitor).
 
+## Triggers
+
+A trigger is personal: one card event of yours (a card moves to a status, gets a label, or you write `/claude <trigger name>` in your own comment) becomes a job for your agent. It reaches only a Claude Code session that is already open and has `/claude` commands on (`/sprintree:commands on`). It never starts an agent and there is no background mode. A job waits 24 hours for a session, then expires, and turning a trigger off cancels its waiting jobs. The monitor prints `KEY-12 · trigger status · job=ID · ev=ID · claim first`; the agent claims the job with `update_trigger_job`, works on that card with the trigger's template as your instruction, and ends the job with `done` or `failed`. Codex and Cursor have no live monitor: they list waiting jobs with `list_triggers`, show them to you, and claim one with `update_trigger_job` only after you confirm that job in chat. Make triggers in Sprintree Settings (Agent triggers) or ask the agent to save one; the job tools need only the write permission, saving a trigger needs Account settings.
+
 ## Agent runs (Claude Code, opt-in)
 
 When a session runs several subagents, Sprintree can keep a private record of where each one stands, so the main agent

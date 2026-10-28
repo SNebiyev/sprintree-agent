@@ -15,8 +15,8 @@
  * nothing. Control characters never reach the terminal and the token is never printed (safeLine = st.mjs's scrub).
  * `/claude` commands are opt-in on the local machine: unless they are on (/sprintree:commands on for this session, or its default, or
  * SPRINTREE_COMMANDS=on in the user's own ~/.claude/settings.json `env`; see readCommandsState) a command frame, and the commands part
- * of a summary, print nothing, so someone who takes over the Sprintree account cannot hand work to this session. Status, notification
- * and batch lines are unaffected. The setting is re-read when its file changes: the monitor then reconnects with the new
+ * of a summary, print nothing, so someone who takes over the Sprintree account cannot hand work to this session. A trigger frame (a card
+ * event that became a job) is gated the same way. Status, notification and batch lines are unaffected. The setting is re-read when its file changes: the monitor then reconnects with the new
  * X-Stream-Commands header (no restart) and writes what the server answered in hello to <session>.ack.
  * The address of this session (`<label>·<4 hex>`, from the server's hello; an older server sends none, so nothing is printed or saved)
  * is printed in the connected line and saved, with the pid, to <session>.live for /sprintree:commands.
@@ -143,6 +143,14 @@ export function formatEvent(d, { commands = false } = {}) {
       const [issue, comment, ev] = [d.issue, d.comment, d.ev].map(field);
       if ([issue, comment, ev].includes(null)) return null;
       s = `${issue} · /claude command · comment=${comment} · ev=${ev}`;
+      break;
+    }
+    case "trigger": {
+      if (!commands) return null; // a trigger job gives work to this session, so it is gated like a /claude command
+      const [issue, job, trigger, ev] = [d.issue, d.job, d.trigger, d.ev].map(field);
+      if ([issue, job, trigger, ev].includes(null)) return null;
+      if (d.kind !== "status" && d.kind !== "label" && d.kind !== "command") return null;
+      s = `${issue} · trigger ${d.kind} · job=${job} · ev=${ev}`;
       break;
     }
     case "batch": {
@@ -575,7 +583,7 @@ export async function main({ env = process.env, cwd = process.cwd(), write = (l)
     }
     const line = formatEvent(d, { commands: current().value });
     if (!line) return;
-    if ((d.type === "status" || d.type === "notification" || d.type === "command" || d.type === "answer") && repeated(`${d.type}:${d.ev}`)) return;
+    if ((d.type === "status" || d.type === "notification" || d.type === "command" || d.type === "answer" || d.type === "trigger") && repeated(d.type === "trigger" ? `trigger:${d.job}` : `${d.type}:${d.ev}`)) return;
     out(line);
   }
 }

@@ -1188,6 +1188,28 @@
    },
    "required": []
   },
+  "list_triggers": {
+   "properties": {
+    "cursor": {},
+    "format": {
+     "enum": [
+      "json",
+      "text"
+     ]
+    },
+    "jobs": {
+     "enum": [
+      "pending",
+      "recent"
+     ]
+    },
+    "limit": {},
+    "project": {}
+   },
+   "required": [
+    "project"
+   ]
+  },
   "list_views": {
    "properties": {
     "cursor": {},
@@ -1393,6 +1415,35 @@
     "position": {}
    },
    "required": []
+  },
+  "save_trigger": {
+   "properties": {
+    "delete": {},
+    "enabled": {},
+    "id": {},
+    "kind": {
+     "enum": [
+      "status",
+      "label",
+      "command"
+     ]
+    },
+    "label": {},
+    "name": {},
+    "project": {},
+    "scope": {
+     "enum": [
+      "any",
+      "assigned_to_me"
+     ]
+    },
+    "status": {},
+    "target": {},
+    "template": {}
+   },
+   "required": [
+    "project"
+   ]
   },
   "save_view": {
    "properties": {
@@ -1938,6 +1989,26 @@
    "required": [
     "project",
     "status"
+   ]
+  },
+  "update_trigger_job": {
+   "properties": {
+    "action": {
+     "enum": [
+      "claim",
+      "done",
+      "failed",
+      "release",
+      "cancel"
+     ]
+    },
+    "comment": {},
+    "job": {},
+    "session": {}
+   },
+   "required": [
+    "action",
+    "job"
    ]
   }
  }

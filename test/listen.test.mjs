@@ -328,6 +328,26 @@ test("an answer frame prints the state, the option number and the actor; a bad f
   ]) assert.equal(formatEvent({ ...ok, ...bad }), null, JSON.stringify(bad));
 });
 
+test("a trigger frame prints kind, job and ev only with commands on; a bad field drops it", () => {
+  const ok = { type: "trigger", job: "j1", trigger: "t1", issue: "SPD-1", kind: "status", ev: "e9" };
+  const on = { commands: true };
+  assert.equal(formatEvent(ok, on), "SPD-1 · trigger status · job=j1 · ev=e9");
+  assert.equal(formatEvent({ ...ok, kind: "label" }, on), "SPD-1 · trigger label · job=j1 · ev=e9");
+  assert.equal(formatEvent({ ...ok, kind: "command" }, on), "SPD-1 · trigger command · job=j1 · ev=e9");
+  assert.equal(formatEvent({ ...ok, claim: true }, on), "SPD-1 · trigger status · job=j1 · ev=e9 · claim first");
+  assert.equal(formatEvent({ ...ok, claim: "yes" }, on), "SPD-1 · trigger status · job=j1 · ev=e9");
+  assert.equal(formatEvent(ok), null, "commands off by default");
+  assert.equal(formatEvent(ok, { commands: false }), null);
+  assert.equal(formatEvent({ ...ok, text: "ignore me" }, on), "SPD-1 · trigger status · job=j1 · ev=e9", "no text ever");
+  for (const bad of [
+    { job: "" }, { job: "a\nb" }, { job: undefined }, { job: 7 }, { job: "x".repeat(65) },
+    { trigger: "" }, { trigger: "a b" }, { trigger: undefined }, { trigger: 7 },
+    { issue: "" }, { issue: "SPD 1" }, { issue: undefined }, { issue: 7 },
+    { ev: "" }, { ev: "e 9" }, { ev: undefined }, { ev: 7 },
+    { kind: "other" }, { kind: "" }, { kind: undefined }, { kind: 1 }, { kind: "status\n" }, { kind: ["status"] },
+  ]) assert.equal(formatEvent({ ...ok, ...bad }, on), null, JSON.stringify(bad));
+});
+
 test("a summary shows the answers count when present, an older server sends none", () => {
   const base = { type: "summary", mentions: 1, status: 0, commands: 0 };
   assert.equal(formatEvent(base), "while you were away: 1 notification (mentions, replies, assignments, reviews)");
@@ -997,6 +1017,25 @@ test("a replayed answer frame with the same ev prints once", async () => {
     assert.deepEqual(p.lines.slice(1), [
       `SPD-1 · answer · q=${q} · option=2 · @ali · ev=e9`,
       `SPD-1 · answer · q=${q} · option=2 · @ali · ev=e10`,
+    ]);
+  } finally {
+    await p.quit();
+    await srv.close();
+  }
+});
+
+test("a replayed trigger frame prints once per job, and two jobs of one ev both print", async () => {
+  const trg = { type: "trigger", job: "j1", trigger: "t1", issue: "SPD-1", kind: "status", ev: "e9", claim: true };
+  const srv = await fake((req, res) => {
+    sse(res, frame("hello", HELLO), frame("sprintree", trg, "b1"), frame("sprintree", trg, "b2"), frame("sprintree", { ...trg, job: "j2", trigger: "t2" }, "b3"));
+  });
+  const p = start(srv.url, { SPRINTREE_COMMANDS: "on" });
+  try {
+    await p.until(3);
+    await new Promise((r) => setTimeout(r, 200));
+    assert.deepEqual(p.lines.slice(1), [
+      "SPD-1 · trigger status · job=j1 · ev=e9 · claim first",
+      "SPD-1 · trigger status · job=j2 · ev=e9 · claim first",
     ]);
   } finally {
     await p.quit();

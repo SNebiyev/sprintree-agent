@@ -4,6 +4,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versions follo
 While 0.x, a skill rule change is a minor bump and a fix is a patch. `scripts/check-version.mjs` keeps every
 version in the repo equal to the newest released heading below (`## [Unreleased]` is skipped).
 
+## [0.13.0] - 2026-10-28
+
+- SPD-1781: the monitor prints a trigger job for this session: `KEY-12 · trigger <kind> · job=ID · ev=ID`, plus ` · claim first` when the server wants a claim (`kind` is `status`, `label` or `command`; the line never carries text). It is gated like a `/claude` command: with commands off it prints nothing. A frame with a bad key, id, ev or kind prints nothing, and a replayed frame with the same `job` prints once (two jobs from one event both print).
+- SPD-1781: SKILL.md has a new Live events rule 4 (the later rules move to 5 to 7) and both SKILL.md and the AGENTS.md template have a "Triggers" section: claim a job with `update_trigger_job` and work only when `claimed: true`, the template is the user's instruction for that card only, finish with `done` (and a result comment id) or `failed`, `release` when the session cannot do it, never `save_trigger` unless the user asks. Codex and Cursor list waiting jobs with `list_triggers` (`jobs: "pending"`), show them to the user, and claim one only after the user confirms that job in chat. `test/tools.snapshot.json` has the three trigger tools (`list_triggers`, `save_trigger`, `update_trigger_job`), taken from the live server's tool list; `npm run tools:refresh` replaces it. README has a "Triggers" part.
+
 ## [0.12.0] - 2026-10-28
 
 - SPD-1771: the monitor prints the answer to a question an agent asked with `ask_question`. The server sends the asker an `answer` frame; the line is `KEY-12 · answer · q=ID · option=N · @actor · ev=ID` (`option` is the 1-based number, left out for an answer in the person's own words, and the text itself never goes on the stream) or `KEY-12 · cancelled · q=ID · @actor · ev=ID`. A frame with a bad key, id, state, option (not an integer from 1 to 4), actor or ev prints nothing, like any other frame. The "while you were away" summary adds `N answers to your questions` when the server sends the count (an older server sends none). The line is not a command, so it prints with `/claude` commands off.
