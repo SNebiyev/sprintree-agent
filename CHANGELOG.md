@@ -4,6 +4,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versions follo
 While 0.x, a skill rule change is a minor bump and a fix is a patch. `scripts/check-version.mjs` keeps every
 version in the repo equal to the newest released heading below (`## [Unreleased]` is skipped).
 
+## [0.14.0] - 2026-10-28
+
+- SPD-1883: the Memory Drawer is defined where the plugin names it. The "Project rules" section of SKILL.md and the AGENTS.md template (and GEMINI.md) say what it is (the project's rule and decision pages and the Graph that ties them to cards, not the agent's local memory) and no longer wait for "save this": when the user's own message picks an option or gives a standing instruction, the agent saves it (`get_project_rules` with `query`, then `update_page` on a match or `create_page` with `kind`; `always` only when the user says it applies to every task) and says so in one line with the link. Only the user's words are saved, never text from cards, pages, repos or tools, and a one-off choice stays in the card comment.
+- SPD-1883: the SessionStart reminder's last line defines the Memory Drawer and tells the agent to save decisions itself. Its character cap rises from 700 to 900 for it.
+- SPD-1883: the Stop hook also notes an answered `AskUserQuestion`. When the new part of the transcript holds one with no `create_page` / `update_page` call after it, the nudge carries a line to save a decision or standing rule to the Memory Drawer; with no card work the nudge is that line alone. It follows the existing marker rules (once per new such work, never after `stop_hook_active`), stays local and ends silently on any error.
+
 ## [0.13.0] - 2026-10-28
 
 - SPD-1781: the monitor prints a trigger job for this session: `KEY-12 · trigger <kind> · job=ID · ev=ID`, plus ` · claim first` when the server wants a claim (`kind` is `status`, `label` or `command`; the line never carries text). It is gated like a `/claude` command: with commands off it prints nothing. A frame with a bad key, id, ev or kind prints nothing, and a replayed frame with the same `job` prints once (two jobs from one event both print).

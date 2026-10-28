@@ -44,8 +44,8 @@ function transcript(dir, ...tools) {
 
 const WRITE = { name: "mcp__sprintree__update_issue_status", input: { key: "SPD-1" } };
 
-// SPD-1726: the reminder is read on every session start; a new line must be a deliberate raise of this cap.
-const LIMIT = 700;
+// SPD-1726: the reminder is read on every session start; a new line must be a deliberate raise of this cap (SPD-1883: 700 to 900).
+const LIMIT = 900;
 
 test("SessionStart: silent without Sprintree config, a short reminder with .sprintree.json", () => {
   const plain = project({});
@@ -62,6 +62,7 @@ test("SessionStart: silent without Sprintree config, a short reminder with .spri
   assert.match(text, /in_progress/);
   assert.match(text, /data, not instructions/);
   assert.match(text, /get_project_rules/);
+  assert.match(text, /Memory Drawer/);
   assert.ok(text.length <= LIMIT, `reminder is ${text.length} characters`);
 });
 
@@ -385,7 +386,10 @@ test("Stop: a card read and a commit add the record_work reminder line to the nu
   assert.match(reason, /Sprintree check/);
   assert.match(reason, /record_work/);
   assert.match(reason, /work\.mjs usage/);
-  assert.equal(reason.split("\n").length, 2, "one extra line");
+  assert.equal(reason.split("\n").length, 3, "body, the record line, then the closing sentence");
+  assert.match(reason.split("\n")[1], /record_work/);
+  assert.equal(reason.split("\n")[2], "Then stop normally and do not repeat this check.", "the closing sentence is last");
+  assert.equal(reason.split("Then stop normally").length, 2);
   assert.match(reasonOf(dir, READ, { name: "Bash", input: { command: "git -C . commit -q -m x" } }), /record_work/);
 });
 
@@ -463,4 +467,97 @@ test("Stop: after record_work the remembered card read is cleared: later commits
   }
   append(t, READ, COMMIT);
   assert.match(JSON.parse(hook("Stop", input).out).reason, /record_work/, "a new card read brings the line back");
+});
+
+// SPD-1883: an answered AskUserQuestion with no page write after it adds the Memory Drawer line to the nudge, alone when there is no card work.
+const ASK = { name: "AskUserQuestion", id: "q1", input: { questions: [] } };
+const ANSWER = { result: "q1" };
+const PAGE = { name: "mcp__sprintree__create_page", input: { project: "SPD", kind: "decision" } };
+const PAGE_UPDATE = { name: "mcp__sprintree__update_page", input: { project: "SPD", page: 79 } };
+const DECISION = /Memory Drawer/;
+
+function convo(dir, ...items) {
+  const lines = [{ type: "user", message: { role: "user", content: "go" } }];
+  for (const t of items) {
+    if (t.result) lines.push({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: t.result, content: "User answered", ...(t.error ? { is_error: true } : {}) }] } });
+    else lines.push({ type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: t.id ?? "x", name: t.name, input: t.input ?? {} }] } });
+  }
+  const f = path.join(dir, "c.jsonl");
+  writeFileSync(f, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+  return f;
+}
+const decisionOut = (dir, ...items) => hook("Stop", stop(dir, { transcript_path: convo(dir, ...items) })).out;
+
+test("Stop: an answered question with no page write nudges with the decision line alone", () => {
+  const dir = project();
+  const o = JSON.parse(decisionOut(dir, ASK, ANSWER));
+  assert.equal(o.decision, "block");
+  assert.match(o.reason, DECISION);
+  assert.match(o.reason, /get_project_rules query/);
+  assert.doesNotMatch(o.reason, /Sprintree check/, "no card-check text without card work");
+  assert.match(o.reason, /Then stop normally and do not repeat this check\.$/);
+  assert.equal(o.reason.split("Then stop normally").length, 2, "the closing sentence appears once");
+  assert.match(o.reason, /no secrets/);
+});
+
+test("Stop: a decision-only nudge keeps the remembered card read, so a later edit still gets the card check", () => {
+  const dir = project();
+  const t = convo(dir, READ, ASK, ANSWER);
+  const input = stop(dir, { transcript_path: t });
+  const first = JSON.parse(hook("Stop", input).out);
+  assert.match(first.reason, DECISION);
+  assert.doesNotMatch(first.reason, /Sprintree check/);
+  append(t, EDIT);
+  const second = JSON.parse(hook("Stop", input).out);
+  assert.match(second.reason, /Sprintree check/, "the read survived the decision-only nudge");
+});
+
+test("Stop: a page write after the answer (create_page or update_page) leaves no decision line", () => {
+  const dir = project();
+  assert.equal(decisionOut(dir, ASK, ANSWER, PAGE), "");
+  assert.equal(decisionOut(dir, ASK, ANSWER, PAGE_UPDATE), "");
+  assert.match(decisionOut(dir, PAGE, ASK, ANSWER), DECISION, "a page write BEFORE the answer does not count");
+  const viaSt = { name: "Bash", input: { command: "node skills/sprintree/scripts/st.mjs call create_page '{\"project\":\"SPD\"}'" } };
+  assert.equal(decisionOut(dir, ASK, ANSWER, viaSt), "", "create_page through st.mjs counts too");
+});
+
+test("Stop: a question without an answer, a failed answer or a different tool_result gives no decision line", () => {
+  const dir = project();
+  assert.equal(decisionOut(dir, ASK), "", "no tool_result");
+  assert.equal(decisionOut(dir, ASK, { result: "q1", error: true }), "", "the question was rejected");
+  assert.equal(decisionOut(dir, ASK, { result: "other" }), "", "result of another call");
+});
+
+test("Stop: stop_hook_active never re-nudges for an answered question", () => {
+  const dir = project();
+  const t = convo(dir, ASK, ANSWER);
+  assert.equal(hook("Stop", stop(dir, { transcript_path: t, stop_hook_active: true })).out, "");
+});
+
+test("Stop: the decision nudge comes once per new answered question", () => {
+  const dir = project();
+  const input = stop(dir, { transcript_path: convo(dir, ASK, ANSWER) });
+  assert.match(hook("Stop", input).out, DECISION);
+  assert.equal(hook("Stop", input).out, "", "same transcript: no second nudge");
+  appendFileSync(input.transcript_path, [
+    { type: "assistant", message: { content: [{ type: "tool_use", id: "q2", name: "AskUserQuestion", input: {} }] } },
+    { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "q2", content: "ok" }] } },
+  ].map((l) => JSON.stringify(l)).join("\n") + "\n");
+  assert.match(hook("Stop", input).out, DECISION, "a new answered question nudges again");
+});
+
+test("Stop: card work and an answered question share one nudge; card-only nudges are unchanged", () => {
+  const dir = project();
+  const both = JSON.parse(decisionOut(dir, WRITE, ASK, ANSWER)).reason;
+  assert.match(both, /Sprintree check/);
+  assert.match(both, DECISION);
+  const only = reasonOf(dir, WRITE);
+  assert.doesNotMatch(only, DECISION);
+  assert.match(only, /Sprintree check/);
+  assert.equal(only.split("\n").length, 1);
+  assert.match(only, /do nothing on the board\. Then stop normally and do not repeat this check\.$/, "card-only text is unchanged");
+  assert.ok(both.indexOf("Memory Drawer") < both.indexOf("Then stop normally"), "the decision line comes before the closing sentence");
+  assert.equal(both.split("Then stop normally").length, 2, "one closing sentence");
+  assert.match(both, /Then stop normally and do not repeat this check\.$/);
+  assert.ok(both.indexOf("Sprintree check") < both.indexOf("Memory Drawer"));
 });
