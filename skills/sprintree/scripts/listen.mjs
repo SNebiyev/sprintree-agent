@@ -125,6 +125,19 @@ export function formatEvent(d, { commands = false } = {}) {
       s = `${issue} · ${kind}${who} · ev=${ev}`;
       break;
     }
+    case "answer": {
+      const [issue, question, ev] = [d.issue, d.question, d.ev].map(field);
+      if ([issue, question, ev].includes(null)) return null;
+      if (d.state !== "answered" && d.state !== "cancelled") return null;
+      const hasOption = d.option !== undefined && d.option !== null;
+      if (hasOption && !(Number.isSafeInteger(d.option) && d.option >= 1 && d.option <= 4)) return null;
+      const who = by(d.actor);
+      if (who === null) return null;
+      // the chosen option only: a free-text answer carries none (the text is read with get_question), a cancelled question never has one
+      const opt = d.state === "answered" && hasOption ? ` · option=${d.option}` : "";
+      s = `${issue} · ${d.state === "answered" ? "answer" : "cancelled"} · q=${question}${opt}${who} · ev=${ev}`;
+      break;
+    }
     case "command": {
       if (!commands) return null;
       const [issue, comment, ev] = [d.issue, d.comment, d.ev].map(field);
@@ -140,12 +153,13 @@ export function formatEvent(d, { commands = false } = {}) {
       return `${plural(n, "card", "cards")} → ${to}${who}`.slice(0, LINE_MAX);
     }
     case "summary": {
-      const [m, st, c] = [d.mentions ?? 0, d.status ?? 0, d.commands ?? 0].map(count);
-      if ([m, st, c].includes(null)) return null;
+      const [m, st, c, a] = [d.mentions ?? 0, d.status ?? 0, d.commands ?? 0, d.answers ?? 0].map(count); // answers: an older server sends none
+      if ([m, st, c, a].includes(null)) return null;
       const parts = [];
       if (m) parts.push(`${plural(m, "notification", "notifications")} (mentions, replies, assignments, reviews)`);
       if (st) parts.push(plural(st, "status change", "status changes"));
       if (c && commands) parts.push(plural(c, "/claude command", "/claude commands"));
+      if (a) parts.push(plural(a, "answer to your questions", "answers to your questions"));
       return parts.length ? `while you were away: ${parts.join(", ")}`.slice(0, LINE_MAX) : null;
     }
     default:

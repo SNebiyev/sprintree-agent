@@ -24,6 +24,16 @@
     "id"
    ]
   },
+  "answer_question": {
+   "properties": {
+    "id": {},
+    "option": {},
+    "text": {}
+   },
+   "required": [
+    "id"
+   ]
+  },
   "archive_notifications": {
    "properties": {
     "ids": {}
@@ -38,6 +48,21 @@
    },
    "required": [
     "project"
+   ]
+  },
+  "ask_question": {
+   "properties": {
+    "ask": {},
+    "idempotency_key": {},
+    "key": {},
+    "options": {},
+    "session": {},
+    "text": {}
+   },
+   "required": [
+    "key",
+    "options",
+    "text"
    ]
   },
   "attach_file": {
@@ -114,6 +139,14 @@
    "required": [
     "invitation",
     "project"
+   ]
+  },
+  "cancel_question": {
+   "properties": {
+    "id": {}
+   },
+   "required": [
+    "id"
    ]
   },
   "change_member_role": {
@@ -706,6 +739,15 @@
     "project"
    ]
   },
+  "get_question": {
+   "properties": {
+    "id": {},
+    "key": {},
+    "limit": {},
+    "open_only": {}
+   },
+   "required": []
+  },
   "get_run": {
    "properties": {
     "lane": {},
@@ -891,6 +933,9 @@
       "issue.criteria_changed",
       "project.criteria_templates_changed",
       "issue.work_recorded",
+      "question.asked",
+      "question.answered",
+      "question.cancelled",
       "view.created",
       "view.updated",
       "view.deleted",
@@ -1656,7 +1701,8 @@
       "comment",
       "status",
       "created",
-      "updated"
+      "updated",
+      "question"
      ]
     },
     "paused": {}

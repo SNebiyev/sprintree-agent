@@ -307,6 +307,37 @@ test("a batch line keeps an unknown actor: an empty or missing actor leaves the 
   assert.equal(formatEvent({ type: "batch", count: 3, to: "done", actor: "a\nb" }), null);
 });
 
+test("an answer frame prints the state, the option number and the actor; a bad field drops it", () => {
+  const Q = "6f1c2d3e-4a5b-4c6d-8e7f-0a1b2c3d4e5f";
+  const ok = { type: "answer", issue: "SPD-1", question: Q, option: 2, state: "answered", actor: "ali", ev: "e9" };
+  assert.equal(formatEvent(ok), `SPD-1 · answer · q=${Q} · option=2 · @ali · ev=e9`);
+  assert.equal(formatEvent({ ...ok, option: 4 }), `SPD-1 · answer · q=${Q} · option=4 · @ali · ev=e9`);
+  assert.equal(formatEvent({ ...ok, option: undefined }), `SPD-1 · answer · q=${Q} · @ali · ev=e9`, "free text: no option");
+  assert.equal(formatEvent({ ...ok, option: null }), `SPD-1 · answer · q=${Q} · @ali · ev=e9`);
+  assert.equal(formatEvent({ ...ok, option: undefined, state: "cancelled" }), `SPD-1 · cancelled · q=${Q} · @ali · ev=e9`);
+  assert.equal(formatEvent({ ...ok, state: "cancelled" }), `SPD-1 · cancelled · q=${Q} · @ali · ev=e9`, "a cancelled question shows no option");
+  assert.equal(formatEvent({ ...ok, actor: "" }), `SPD-1 · answer · q=${Q} · option=2 · ev=e9`);
+  assert.equal(formatEvent({ ...ok, ev: "e9" }, { commands: false }), formatEvent(ok), "not a command: printed with commands off");
+  for (const bad of [
+    { issue: "" }, { issue: "SPD 1" }, { issue: undefined },
+    { question: "" }, { question: "a\nb" }, { question: "x".repeat(65) }, { question: undefined },
+    { option: 0 }, { option: 5 }, { option: 1.5 }, { option: "2" }, { option: -1 }, { option: Infinity },
+    { state: "open" }, { state: "" }, { state: undefined }, { state: "answered\n" },
+    { actor: "a\nb" }, { actor: "@ali" }, { actor: 7 },
+    { ev: "" }, { ev: "e 9" }, { ev: undefined },
+  ]) assert.equal(formatEvent({ ...ok, ...bad }), null, JSON.stringify(bad));
+});
+
+test("a summary shows the answers count when present, an older server sends none", () => {
+  const base = { type: "summary", mentions: 1, status: 0, commands: 0 };
+  assert.equal(formatEvent(base), "while you were away: 1 notification (mentions, replies, assignments, reviews)");
+  assert.equal(formatEvent({ ...base, answers: 0 }), formatEvent(base));
+  assert.equal(formatEvent({ ...base, answers: 1 }), "while you were away: 1 notification (mentions, replies, assignments, reviews), 1 answer to your questions");
+  assert.equal(formatEvent({ type: "summary", mentions: 0, status: 0, commands: 0, answers: 3 }), "while you were away: 3 answers to your questions");
+  assert.equal(formatEvent({ type: "summary", mentions: 0, status: 0, commands: 0, answers: -1 }), null);
+  assert.equal(formatEvent({ ...base, answers: "2" }), null);
+});
+
 test("projectOf upper-cases and trims a .sprintree.json project; a bad one falls back to the environment", () => {
   const home = tmpDir("sa-listen-");
   mkdirSync(path.join(home, ".git"));
