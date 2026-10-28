@@ -983,3 +983,23 @@ test("a stale pointer (the monitor is gone) is ignored: commands then act on the
   assert.ok(!existsSync(sessionFile({ ...B, CLAUDE_CODE_SESSION_ID: "stale-A" })));
   assert.doesNotMatch(r.stdout, /this session:/);
 });
+
+test("a replayed answer frame with the same ev prints once", async () => {
+  const q = "11111111-1111-4111-8111-111111111111";
+  const ans = { type: "answer", issue: "SPD-1", question: q, option: 2, state: "answered", actor: "ali", ev: "e9" };
+  const srv = await fake((req, res) => {
+    sse(res, frame("hello", HELLO), frame("sprintree", ans, "b1"), frame("sprintree", ans, "b2"), frame("sprintree", { ...ans, ev: "e10" }, "b3"));
+  });
+  const p = start(srv.url, {});
+  try {
+    await p.until(3);
+    await new Promise((r) => setTimeout(r, 200));
+    assert.deepEqual(p.lines.slice(1), [
+      `SPD-1 · answer · q=${q} · option=2 · @ali · ev=e9`,
+      `SPD-1 · answer · q=${q} · option=2 · @ali · ev=e10`,
+    ]);
+  } finally {
+    await p.quit();
+    await srv.close();
+  }
+});

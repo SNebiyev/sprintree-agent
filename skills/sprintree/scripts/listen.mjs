@@ -575,7 +575,7 @@ export async function main({ env = process.env, cwd = process.cwd(), write = (l)
     }
     const line = formatEvent(d, { commands: current().value });
     if (!line) return;
-    if ((d.type === "status" || d.type === "notification" || d.type === "command") && repeated(`${d.type}:${d.ev}`)) return;
+    if ((d.type === "status" || d.type === "notification" || d.type === "command" || d.type === "answer") && repeated(`${d.type}:${d.ev}`)) return;
     out(line);
   }
 }
